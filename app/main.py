@@ -1,3 +1,4 @@
+from turtle import mode
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from app.service.recall_bot import RecallBot
@@ -6,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from app.service.gemini_live import GeminiLive
 from app.core.manage_connections import ConnectionManager
 from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 import os
 
 
@@ -15,14 +17,56 @@ cm = ConnectionManager()
 model = GeminiLive(connection_manager=cm)
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+current_bot_id = None
+current_meeting_url = None
+participants = []  
+transcripts_enabled = False
+processed_audio_segments = set()
 
 class MeetingRequest(BaseModel):
-    meeting_url : str
+    meeting_url: str
+    isTranscript: bool = False
 
-# Effective error handling 
-# todo - cors handling
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+def _safe_name(value: str) -> str:
+    try:
+        s = str(value or "unknown")
+        for ch in '<>:"/\\|?*':
+            s = s.replace(ch, '-')
+        return s.strip().replace(os.sep, '-')
+    except Exception:
+        return "unknown"
+
+def _save_transcript_line(bot_id: str, speaker: str, text: str):
+    try:
+        if not transcripts_enabled:
+            return
+        if not os.path.exists(TRANSCRIPTS_DIR):
+            os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+        safe_bot = _safe_name(bot_id)
+        safe_meeting = _safe_name(current_meeting_url or "meeting")
+        file_path = os.path.join(TRANSCRIPTS_DIR, f"{safe_bot}_{safe_meeting}.txt")
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(f"{speaker}: {text}\n")
+    except Exception as e:
+        print(f"Error saving transcript: {e}")
+
+def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
+    """Simple check if this exact audio segment was already processed"""
+    segment_key = f"{start_time}:{end_time}:{speaker}"
+    
+    if segment_key in processed_audio_segments:
+        print(f"Duplicate audio segment detected: {start_time}s to {end_time}s from {speaker}")
+        return True
+        
+    processed_audio_segments.add(segment_key)
+    return False
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,21 +76,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 async def bot_html(request: Request):
     return templates.TemplateResponse("bot.html", {"request": request})
     
     
 @app.post("/add_scooby")
-async def add_scooby_bot(request : MeetingRequest):
-    
+async def add_scooby_bot(request: MeetingRequest):
     meeting_url = request.meeting_url
+    is_transcript = request.isTranscript
     bot_id = await rb.add_bots(meeting_url)
+    if bot_id:
+        global current_bot_id, current_meeting_url, transcripts_enabled
+        current_bot_id = bot_id
+        current_meeting_url = meeting_url
+        transcripts_enabled = is_transcript
+        reset_participants()
 
-    return {
-        "message" : "succefully added meeting bot",
-        "bot_id" : bot_id
-    }
+        processed_audio_segments.clear()
+        try:
+            model.bot_id = bot_id
+        except Exception:
+            pass
+        print_active_bots()
+    return {"bot_id": bot_id}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -67,32 +121,116 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print(f"WebSocket {connection_id} disconnected")
+        cm.remove_connection(connection_id)
     except Exception as e:
         print(f"WebSocket error for {connection_id}: {e}")
-    finally:
         cm.remove_connection(connection_id)
 
-
-# refer recall docs to add more context to model
-# 1. participant data
-# 2. left event and join event
-# 3. answer in chat
-# 4. screen share
  
-@app.post("/api/webhook/recall")
-async def recall_webhook(request: Request):
-    
-    print("Received webhook from Recall.ai")
+@app.post("/api/webhook/recall/bot-status")
+async def recall_bot_status_webhook(request: Request):
+    print("Received BOT STATUS webhook from Recall.ai")
     try:
         payload = await request.json()
+        print("Bot Status Payload:", payload)
+        
+        event_type = payload.get("type")
+        data = payload.get("data", {})
+        
+        if event_type == "bot.status_change":
+            bot_id = data.get("id")
+            status = data.get("status")
+            sub_code = data.get("sub_code")
+            
+            print(f"Bot {bot_id} status changed to: {status}")
+            if sub_code:
+                print(f"Sub code: {sub_code}")
+            
+            if current_bot_id and bot_id != current_bot_id:
+                print(f"Ignoring status for non-current bot {bot_id}")
+                return {"status": "ok"}
+
+            if status == "joining_call":
+                print(f"Bot {bot_id} is joining the meeting")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
+                
+            elif status == "in_call":
+                print(f"Bot {bot_id} successfully joined the meeting")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
+                
+            elif status == "in_call_recording":
+                print(f"Bot {bot_id} is now recording")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
+                
+            elif status == "call_ended":
+                print(f"Bot {bot_id} call ended")
+                _save_transcript_line(bot_id, "BOT_STATUS", "Call ended")
+                remove_bot_context()
+                print_active_bots()
+                
+            elif status == "done":
+                print(f"Bot {bot_id} finished successfully")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
+                rb.remove_bot_context()
+                print_active_bots()
+                
+            elif status == "fatal":
+                print(f"Bot {bot_id} encountered a fatal error")
+                if sub_code:
+                    print(f"Fatal error reason: {sub_code}")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
+                remove_bot_context()
+                print_active_bots()
+                
+            else:
+                print(f"Unhandled bot status: {status}")
+        
+        else:
+            print(f"Unhandled bot status event type: {event_type}")
+
+    except Exception as e:
+        print(f"Error processing bot status webhook: {e}")
+
+    return {"status": "ok"}
+
+
+@app.post("/api/webhook/recall")
+async def recall_webhook(request: Request):
+    print("Received REALTIME webhook from Recall.ai")
+    try:
+        payload = await request.json()
+        print("Realtime Payload:", payload)
         
         event_type = payload.get("event")
+        data = payload.get("data", {})
+        bot_info = data.get("bot", {})
+        bot_id = bot_info.get("id")
+
+        if current_bot_id is None:
+            print("No current bot set; ignoring realtime event")
+            return {"status": "ok"}
+
+        if current_bot_id and bot_id != current_bot_id:
+            print(f"Ignoring realtime event for non-current bot {bot_id}")
+            return {"status": "ok"}
+        
         if event_type == "transcript.data":
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
-
             spoken_text = " ".join([w["text"] for w in words])
+            
+            # Get audio segment timestamps for deduplication
+            start_time = words[0]["start_timestamp"]["relative"]
+            end_time = words[-1]["end_timestamp"]["relative"]
+            
+            print(f"Processing audio segment: {start_time}s to {end_time}s from {speaker}")
+            
+            if _is_duplicate_audio_segment(start_time, end_time, speaker):
+                print(f"Skipping duplicate audio segment from {speaker}")
+                return {"status": "ok"}
+            
             print(f"Transcribed text from {speaker}: {spoken_text}")
+            _save_transcript_line(bot_id, speaker, spoken_text)
     
             
             if "scooby" in spoken_text.lower():
@@ -103,50 +241,139 @@ async def recall_webhook(request: Request):
                     print("Sent to Gemini successfully")
                 except Exception as e:
                     print(f"Error sending to Gemini: {e}")
-            
+        
             else:
                 model.chat_history.append(
                    { "role": "user",
                     "content": spoken_text.strip(),
                     "type": "audio_response"}
                 )
-        
-        # elif event_type == "participant_events.join":
-        #     participant_data = payload["data"]["data"]["participant"]
-        #     action = payload["data"]["data"]["action"]
+        elif event_type == "participant_events.join":
+            participant_data = payload["data"]["data"]["participant"]
+            action = payload["data"]["data"]["action"]
             
-        #     if action == "join":
-        #         add_participant(participant_data)
-        #         logger.info(f"Participant joined: {participant_data['name']}")
-                
-        #         logger.info(f"Total participants: {len(participants)}")
-        #         for p in participants:
-        #             logger.info(f"  - {p['name']} (ID: {p['id']}, Host: {p['is_host']})")
+            if action == "join":
+                add_participant(participant_data)
+                print(f"Total participants: {len(participants)}")
+                print_active_bots()
+                _save_transcript_line(
+                    bot_id,
+                    "INFO : PARTICIPANT",
+                    f"JOINED : {participant_data.get('name')} ({participant_data.get('id')})"
+                )
         
-        # elif event_type == "participant_events.leave":
-        #     participant_data = payload["data"]["data"]["participant"]
-        #     participant_id = participant_data["id"]
+        elif event_type == "participant_events.leave":
+            participant_data = payload["data"]["data"]["participant"]
+            participant_id = participant_data["id"]
+            participant_name = participant_data["name"]
             
-        #     participant = get_participant_by_id(participant_id)
-        #     if participant:
-        #         participant['status'] = 'left'
-        #         print(f"Participant left: {participant['name']}")
-                
-        #         if participant['name'].lower() == 'pulse' and pulse_gemini_handler:
-        #             print("Pulse participant left meeting - cleaning up handler")
-        #             await pulse_gemini_handler.cleanup()
-        #             pulse_gemini_handler = None
-        #         elif participant['name'].lower() == 'arya' and arya_gemini_handler:
-        #             print("Arya participant left meeting - cleaning up handler")
-        #             await arya_gemini_handler.cleanup()
-        #             arya_gemini_handler = None
+            if participant_name.lower() != "scooby":
+                participant = get_participant_by_id(participant_id)
+                if participant:
+                    participant['status'] = 'left'
+                    print(f"Participant left: {participant['name']}")
+            try:
+                model.participants = list(participants)
+            except Exception:
+                pass
+            _save_transcript_line(
+                bot_id,
+                "INFO : PARTICIPANT",
+                f"LEFT: {participant_name} ({participant_id})"
+            )
+            print_active_bots()
         
         else:
-            print(f"Received unhandled event type: {event_type}")
+            print(f"Unhandled realtime event: {event_type}")
 
     except Exception as e:
-        print(f"Error processing webhook: {e}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
+        print(f"Error processing realtime webhook: {e}")
 
     return {"status": "ok"}
+
+def get_participant_by_id(participant_id):
+    try:
+        return next((p for p in participants if p['id'] == participant_id), None)
+    except Exception as e:
+        print(f"Error getting participant: {e}")
+        return None
+
+def reset_participants():
+    try:
+        participants.clear()
+        try:
+            model.participants = []
+        except Exception:
+            pass
+        print("Participant context reset")
+    except Exception as e:
+        print(f"Error resetting participants: {e}")
+
+def add_participant(participant_data):
+        try:
+            participant_id = participant_data.get('id')
+            participant_name = participant_data.get('name')
+            
+            if not participant_id or not participant_name:
+                print(f"Invalid participant data: {participant_data}")
+                return
+            
+            existing_participant = next((p for p in participants if p['id'] == participant_id), None)
+            
+            if not existing_participant:
+                participants.append({
+                    'id': participant_id,
+                    'name': participant_name,
+                    'is_host': participant_data.get('is_host', False),
+                    'platform': participant_data.get('platform', 'unknown'),
+                    'extra_data': participant_data.get('extra_data', {}),
+                    'status': 'joined'
+                })
+                print(f"Added participant: {participant_name}")
+            else:
+                existing_participant.update({
+                    'name': participant_name,
+                    'is_host': participant_data.get('is_host', False),
+                    'platform': participant_data.get('platform', 'unknown'),
+                    'extra_data': participant_data.get('extra_data', {}),
+                    'status': 'joined'
+                })
+                print(f"Updated participant: {participant_name}")
+            try:
+                model.participants = list(participants)
+            except Exception:
+                pass
+                
+        except Exception as e:
+            print(f"Error managing participant: {e}")
+
+
+def remove_bot_context():
+        try:
+            global current_bot_id, current_meeting_url, transcripts_enabled
+            reset_participants()
+            # Reset audio segment cache
+            processed_audio_segments.clear()
+            current_bot_id = None
+            current_meeting_url = None
+            transcripts_enabled = False
+            try:
+                model.bot_id = None
+                model.chat_history = []
+                model.conversation_history = []
+                try:
+                    model.current_transcription = ""
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            print("Cleared current bot context")
+        except Exception as e:
+            print(f"Error removing bot context: {e}")
+
+
+def print_active_bots():
+        try:
+            print(f"Current active bot: {current_bot_id}")
+        except Exception as e:
+            print(f"Error printing active bots: {e}")

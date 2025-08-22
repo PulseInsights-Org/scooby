@@ -3,6 +3,7 @@ import os
 from app.service.graph_store import Neo4jDriver
 from dotenv import load_dotenv
 from typing import List
+from app.service.recall_bot import RecallBot
 
 load_dotenv()
 
@@ -11,6 +12,7 @@ NEO4J_USER = os.getenv("NEO4J_USER")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 graph = Neo4jDriver(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
+rb = RecallBot()
 
 
 class GeminiTools():
@@ -40,4 +42,5 @@ class GeminiTools():
         results = self.pc.search_main_events(query_text=query)
         return results["results"]
 
-    
+    async def send_chat_message_tool(self, bot_id: str, message: str, to: str = "everyone", pin: bool = False):
+        return await rb.send_chat_message(bot_id=bot_id, message=message, to=to, pin=pin)
