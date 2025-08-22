@@ -23,13 +23,12 @@ def prompt():
        - If relevant results are found, extract main event + sub-events.
        - If results are ambiguous or missing, handle as per edge cases below.
     2. For actor or time-specific relation/discussion-specific queries, after identifying the event, use **get_event_connections**.
-    3. **IMPORTANT**: If the user's question seems incomplete or you need more context about what they're asking, use **get_latest_transcripts()** to get the latest 5 conversation transcriptions. This helps you understand the full context of their question.
+    3. **IMPORTANT**: Once for a user question while performing all function call, you must immediately say a short, natural-sounding filler line in spoken dialogue (e.g., acknowledging the request and mentioning you’re checking notes or fetching information). Be creative each time so it feels human and conversational — vary the phrasing (examples: “Alright, let me take a quick look at my notes…”, “Give me just a moment while I pull that up…”, “Sure, I’ll check that right away, hang on…”). Always say this in parallel while the all the function calls is happening. NOTE : Do no say this before every funtions you call
     4. Only synthesize and answer after all required retrievals are complete.
     ---
     ## Important Constraints
     - Always attempt **search_vector_DB first**. Graph tools are secondary refinements.
-    - **Use get_latest_transcripts() when questions seem partial** - this is crucial for understanding incomplete user queries.
-    - Never fabricate answers beyond retrieved evidence.
+    - **Never fabricate answers beyond retrieved evidence.**
     - Be explicit in synthesis: combine retrieved summaries, events, actors, and times 
       into a cohesive final answer.
     - Answer user queries completely and up to point without questioning back.

@@ -16,7 +16,7 @@ class GeminiLive():
         self.config = {
             "response_modalities": ["AUDIO"],
             "output_audio_transcription": {},
-            "temperature": 0,
+            "temperature": 0.5,
             "tools" : self.tools,
             "system_instruction": prompt(),
         }
@@ -32,9 +32,6 @@ class GeminiLive():
             yield n, item
             n += 1
     
-    # 2. Add coversation history
-    # 3. voice, temp, prompt, transcription etc -> slaient features
-
     def define_tools(self):
         connections_retrieval_tool = FunctionDeclaration(
             name="connections_retrieval_tool",
@@ -90,7 +87,6 @@ class GeminiLive():
                 composed = "Conversation history:\n" + "\n".join(history_lines) + "\n\n"
             composed += f"Question: {text}"
             
-            print(composed)
 
             await connection.send_client_content(
                 turns={"role": "user", "parts": [{"text": composed}]}, turn_complete=True
@@ -105,7 +101,6 @@ class GeminiLive():
             async for n, response in self._async_enumerate(turn):
                 
                 if response.server_content:
-                    print(response.server_content)
                     transcription = getattr(response.server_content, "output_transcription", None)
                     
                     if transcription:
@@ -148,6 +143,8 @@ class GeminiLive():
                                     
                                 else:
                                     data = {"error": f"Unknown function: {function_name}"}
+                                
+                                print(data)
                                     
                                 function_response = types.FunctionResponse(
                                     id=fc.id,
