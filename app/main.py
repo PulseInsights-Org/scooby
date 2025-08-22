@@ -169,7 +169,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # refer recall docs to add more context to model
 # 1. participant data                 - done
 # 2. left event and join event        - done
-# 3. answer in chat                   - pending
+# 3. answer in chat                   - going onn
 # 4. screen share                     - pending
  
 @app.post("/api/webhook/recall/bot-status")
@@ -181,8 +181,6 @@ async def recall_bot_status_webhook(request: Request):
     print("Received BOT STATUS webhook from Recall.ai")
     try:
         payload = await request.json()
-<<<<<<< Updated upstream
-=======
         print("Bot Status Payload:", payload)
         
         event_type = payload.get("type")  # Note: different structure than realtime webhooks
@@ -251,7 +249,6 @@ async def recall_webhook(request: Request):
     try:
         payload = await request.json()
         print("Realtime Payload:", payload)
->>>>>>> Stashed changes
         
         event_type = payload.get("event")
         data = payload.get("data", {})
@@ -270,10 +267,7 @@ async def recall_webhook(request: Request):
                 try:
                     print(f"Sending to Gemini: {spoken_text}")
                     await model.connect_to_gemini(text=spoken_text)
-<<<<<<< Updated upstream
                     print("Sent to Gemini successfully")
-=======
->>>>>>> Stashed changes
                 except Exception as e:
                     print(f"Error sending to Gemini: {e}")
         
