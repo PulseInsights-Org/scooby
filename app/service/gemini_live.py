@@ -15,12 +15,16 @@ class GeminiLive():
         self.define_tools()
         self.config = {
             "response_modalities": ["AUDIO"],
+            "output_audio_transcription": {},
             "temperature": 0,
             "tools" : self.tools,
-            "system_instruction": prompt()
+            "system_instruction": prompt(),
         }
         self.connection_manager = connection_manager
         self.tool_executor = GeminiTools()
+        self.conversation_history = []
+        self.chat_history = []
+        self.current_transcription = ""
     
     async def _async_enumerate(self, aiterable):
         n = 0
@@ -70,20 +74,52 @@ class GeminiLive():
             model = self.model,
             config=self.config,
         ) as connection : 
-            message = text
+            recent_turns = self.chat_history[-5:] if len(self.chat_history) > 5 else self.chat_history
+            history_lines = []
+            for t in recent_turns:
+                try:
+                    role = t.get("role", "user")
+                    parts = t.get("parts", [])
+                    content_text = parts[0].get("text") if parts and isinstance(parts[0], dict) else ""
+                    history_lines.append(f"{role}: {content_text}")
+                except Exception:
+                    pass
+
+            composed = ""
+            if history_lines:
+                composed = "Conversation history:\n" + "\n".join(history_lines) + "\n\n"
+            composed += f"Question: {text}"
+            
+            print(composed)
+
             await connection.send_client_content(
-                turns={"role": "user", "parts": [{"text": message}]}, turn_complete=True
+                turns={"role": "user", "parts": [{"text": composed}]}, turn_complete=True
             )
+
+            current_turn = {"role": "user", "parts": [{"text": text}]}
+            self.chat_history.append(current_turn)
+            if len(self.chat_history) > 5:
+                self.chat_history = self.chat_history[-5:]
             
             turn = connection.receive()
             async for n, response in self._async_enumerate(turn):
+                
                 if response.server_content:
+                    print(response.server_content)
+                    transcription = getattr(response.server_content, "output_transcription", None)
+                    
+                    if transcription:
+                        transcribed_text = getattr(transcription, "text", None)
+                        if transcribed_text:
+                            self.current_transcription += transcribed_text
+                    
                     if response.data is not None and self.connection_manager is not None:
                         try:
                             encoded = base64.b64encode(response.data).decode("ascii")
                         except Exception as encode_err:
                             print(f"Error base64-encoding audio chunk: {encode_err}")
                             encoded = None
+                            
                         if encoded:
                             print("sending audio")
                             await self.connection_manager.send_to_all({
@@ -120,7 +156,9 @@ class GeminiLive():
                                 )
                                 
                                 function_responses.append(function_response)
+                            
                             except Exception as tool_error:
+                                
                                 print(f"Error executing tool {function_name}: {tool_error}")
                                 error_response = types.FunctionResponse(
                                     id=fc.id,
@@ -134,6 +172,7 @@ class GeminiLive():
                             await connection.send_tool_response(function_responses=function_responses)
                     except Exception as e:
                         print(f"Error processing tool calls: {e}")
+                        
                 if n == 0:
                     try:
                         if (response.server_content and 
@@ -146,4 +185,46 @@ class GeminiLive():
                             print("No inline data available in response")
                     except AttributeError as e:
                         print(f"Error accessing response data: {e}")
+            
+            
+                turn_complete = bool(getattr(getattr(response, 'server_content', None), 'turn_complete', False))
+                
+                if turn_complete:
+                    
+                    if self.current_transcription and self.current_transcription.strip():
+                        final_text = self.current_transcription.strip()
+                        print(f"[Scooby]: {final_text}")
+                        self.conversation_history.append({
+                            "role": "model",
+                            "content": final_text,
+                            "type": "audio_response"
+                        })
+                        
+                        self.chat_history.append({
+                            "role": "model",
+                            "parts": [{"text": final_text}]
+                        })
+                        
+                        if len(self.chat_history) > 5:
+                            self.chat_history = self.chat_history[-5:]
+                    self.current_transcription = ""
+                    
+            if self.current_transcription and self.current_transcription.strip():
+                final_text = self.current_transcription.strip()
+                print(f"[Scooby]: {final_text}")
+                self.conversation_history.append({
+                    "role": "model",
+                    "content": final_text,
+                    "type": "audio_response"
+                })
+                
+                self.chat_history.append({
+                    "role": "model",
+                    "parts": [{"text": final_text}]
+                })
+                
+                if len(self.chat_history) > 5:
+                    self.chat_history = self.chat_history[-5:]
+                    
+                self.current_transcription = ""
     
