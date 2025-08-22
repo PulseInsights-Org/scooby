@@ -84,11 +84,18 @@ async def bot_html(request: Request):
     
 @app.post("/add_scooby")
 async def add_scooby_bot(request: MeetingRequest):
+    global current_bot_id, current_meeting_url, transcripts_enabled
+    
+    if current_bot_id is not None:
+        return {
+            "message" : "Scooby Bot already exists, Please remove and try again"
+        }
+    
     meeting_url = request.meeting_url
     is_transcript = request.isTranscript
     bot_id = await rb.add_bots(meeting_url)
     if bot_id:
-        global current_bot_id, current_meeting_url, transcripts_enabled
+        
         current_bot_id = bot_id
         current_meeting_url = meeting_url
         transcripts_enabled = is_transcript
