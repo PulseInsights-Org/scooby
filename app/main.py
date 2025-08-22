@@ -8,6 +8,8 @@ from app.core.manage_connections import ConnectionManager
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 import os
+from app.service.participants import ParticipantsManager
+from app.utils import TranscriptWriter, BotContext
 
 
 rb = RecallBot()
@@ -18,8 +20,20 @@ model = GeminiLive(connection_manager=cm)
 
 current_bot_id = None
 current_meeting_url = None
-participants = []  
 transcripts_enabled = False
+
+
+bot_context = BotContext()
+participants_manager = ParticipantsManager()
+
+participants = participants_manager.list
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
+transcript_writer = TranscriptWriter(
+    enabled_getter=lambda: transcripts_enabled,
+    transcripts_dir=TRANSCRIPTS_DIR,
+    meeting_url_getter=lambda: current_meeting_url,
+)
 
 class MeetingRequest(BaseModel):
     meeting_url: str
@@ -27,41 +41,9 @@ class MeetingRequest(BaseModel):
     
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
-TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
-
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
-
-def _safe_name(value: str) -> str:
-    try:
-        s = str(value or "unknown")
-        for ch in '<>:"/\\|?*':
-            s = s.replace(ch, '-')
-        return s.strip().replace(os.sep, '-')
-    except Exception:
-        return "unknown"
-
-def _save_transcript_line(bot_id: str, speaker: str, text: str):
-    try:
-        if not transcripts_enabled:
-            return
-        if not os.path.exists(TRANSCRIPTS_DIR):
-            os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
-        safe_bot = _safe_name(bot_id)
-        safe_meeting = _safe_name(current_meeting_url or "meeting")
-        file_path = os.path.join(TRANSCRIPTS_DIR, f"{safe_bot}_{safe_meeting}.txt")
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(f"{speaker}: {text}\n")
-    except Exception as e:
-        print(f"Error saving transcript: {e}")
-
-# Static files (CSS/JS)
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -75,89 +57,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def add_participant(participant_data):
-    try:
-        participant_id = participant_data.get('id')
-        participant_name = participant_data.get('name')
-        
-        if not participant_id or not participant_name:
-            print(f"Invalid participant data: {participant_data}")
-            return
-        
-        existing_participant = next((p for p in participants if p['id'] == participant_id), None)
-        
-        if not existing_participant:
-            participants.append({
-                'id': participant_id,
-                'name': participant_name,
-                'is_host': participant_data.get('is_host', False),
-                'platform': participant_data.get('platform', 'unknown'),
-                'extra_data': participant_data.get('extra_data', {}),
-                'status': 'joined'
-            })
-            print(f"Added participant: {participant_name}")
-        else:
-            existing_participant.update({
-                'name': participant_name,
-                'is_host': participant_data.get('is_host', False),
-                'platform': participant_data.get('platform', 'unknown'),
-                'extra_data': participant_data.get('extra_data', {}),
-                'status': 'joined'
-            })
-            print(f"Updated participant: {participant_name}")
-        try:
-            model.participants = list(participants)
-        except Exception:
-            pass
-            
-    except Exception as e:
-        print(f"Error managing participant: {e}")
-
-def get_participant_by_id(participant_id):
-    try:
-        return next((p for p in participants if p['id'] == participant_id), None)
-    except Exception as e:
-        print(f"Error getting participant: {e}")
-        return None
-
-def reset_participants():
-    try:
-        participants.clear()
-        try:
-            model.participants = []
-        except Exception:
-            pass
-        print("Participant context reset")
-    except Exception as e:
-        print(f"Error resetting participants: {e}")
-
-def remove_bot_context():
-    try:
-        global current_bot_id, current_meeting_url, transcripts_enabled
-        reset_participants()
-        current_bot_id = None
-        current_meeting_url = None
-        transcripts_enabled = False
-        try:
-            model.bot_id = None
-            model.chat_history = []
-            model.conversation_history = []
-            try:
-                model.current_transcription = ""
-            except Exception:
-                pass
-        except Exception:
-            pass
-        print("Cleared current bot context")
-    except Exception as e:
-        print(f"Error removing bot context: {e}")
-
-
-def print_active_bots():
-    try:
-        print(f"Current active bot: {current_bot_id}")
-    except Exception as e:
-        print(f"Error printing active bots: {e}")
+    
 
 # todo - change to pydantic base model of request type and add meeting url as parameter
 
@@ -176,13 +76,24 @@ async def add_scooby_bot(request: MeetingRequest):
         current_bot_id = bot_id
         current_meeting_url = meeting_url
         transcripts_enabled = is_transcript
-        reset_participants()
+        # keep BotContext in sync
+        try:
+            bot_context.bot_id = bot_id
+            bot_context.meeting_url = meeting_url
+            bot_context.transcripts_enabled = is_transcript
+        except Exception:
+            pass
+        participants_manager.reset()
+        try:
+            model.participants = list(participants_manager.list)
+        except Exception:
+            pass
         # Propagate bot id to model so tools can use it
         try:
             model.bot_id = bot_id
         except Exception:
             pass
-        print_active_bots()
+        bot_context.print_active_bot()
     return {"bot_id": bot_id}
 
 @app.websocket("/ws")
@@ -223,6 +134,7 @@ async def recall_bot_status_webhook(request: Request):
     try:
         payload = await request.json()
         print("Bot Status Payload:", payload)
+        global current_bot_id, current_meeting_url, transcripts_enabled
         
         event_type = payload.get("type")
         data = payload.get("data", {})
@@ -243,35 +155,71 @@ async def recall_bot_status_webhook(request: Request):
             # Handle different bot statuses for the current bot
             if status == "joining_call":
                 print(f"Bot {bot_id} is joining the meeting")
-                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
+                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
                 
             elif status == "in_call":
                 print(f"Bot {bot_id} successfully joined the meeting")
-                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
+                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
                 
             elif status == "in_call_recording":
                 print(f"Bot {bot_id} is now recording")
-                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
+                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
                 
             elif status == "call_ended":
                 print(f"Bot {bot_id} call ended")
-                _save_transcript_line(bot_id, "BOT_STATUS", "Call ended")
-                remove_bot_context()
-                print_active_bots()
+                transcript_writer.save_line(bot_id, "BOT_STATUS", "Call ended")
+                try:
+                    participants_manager.reset()
+                    try:
+                        model.participants = []
+                    except Exception:
+                        pass
+                    current_bot_id = None
+                    current_meeting_url = None
+                    transcripts_enabled = False
+                    bot_context.clear()
+                    BotContext.remove_model_context(model)
+                except Exception as _:
+                    pass
+                bot_context.print_active_bot()
                 
             elif status == "done":
                 print(f"Bot {bot_id} finished successfully")
-                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
-                remove_bot_context()
-                print_active_bots()
+                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
+                try:
+                    participants_manager.reset()
+                    try:
+                        model.participants = []
+                    except Exception:
+                        pass
+                    current_bot_id = None
+                    current_meeting_url = None
+                    transcripts_enabled = False
+                    bot_context.clear()
+                    BotContext.remove_model_context(model)
+                except Exception as _:
+                    pass
+                bot_context.print_active_bot()
                 
             elif status == "fatal":
                 print(f"Bot {bot_id} encountered a fatal error")
                 if sub_code:
                     print(f"Fatal error reason: {sub_code}")
-                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
-                remove_bot_context()
-                print_active_bots()
+                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
+                try:
+                    participants_manager.reset()
+                    try:
+                        model.participants = []
+                    except Exception:
+                        pass
+                    current_bot_id = None
+                    current_meeting_url = None
+                    transcripts_enabled = False
+                    bot_context.clear()
+                    BotContext.remove_model_context(model)
+                except Exception as _:
+                    pass
+                bot_context.print_active_bot()
                 
             else:
                 print(f"Unhandled bot status: {status}")
@@ -310,7 +258,7 @@ async def recall_webhook(request: Request):
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
             print(f"Transcribed text from {speaker}: {spoken_text}")
-            _save_transcript_line(bot_id, speaker, spoken_text)
+            transcript_writer.save_line(bot_id, speaker, spoken_text)
     
             
             if "scooby" in spoken_text.lower():
@@ -333,10 +281,14 @@ async def recall_webhook(request: Request):
             action = payload["data"]["data"]["action"]
             
             if action == "join":
-                add_participant(participant_data)
-                print(f"Total participants: {len(participants)}")
-                print_active_bots()
-                _save_transcript_line(
+                participants_manager.add(participant_data)
+                try:
+                    model.participants = list(participants_manager.list)
+                except Exception:
+                    pass
+                print(f"Total participants: {len(participants_manager.list)}")
+                bot_context.print_active_bot()
+                transcript_writer.save_line(
                     bot_id,
                     "INFO : PARTICIPANT",
                     f"JOINED : {participant_data.get('name')} ({participant_data.get('id')})"
@@ -348,20 +300,20 @@ async def recall_webhook(request: Request):
             participant_name = participant_data["name"]
             
             if participant_name.lower() != "scooby":
-                participant = get_participant_by_id(participant_id)
-                if participant:
-                    participant['status'] = 'left'
-                    print(f"Participant left: {participant['name']}")
-            try:
-                model.participants = list(participants)
-            except Exception:
-                pass
-            _save_transcript_line(
+                participants_manager.mark_left(participant_id)
+                try:
+                    model.participants = list(participants_manager.list)
+                except Exception:
+                    pass
+                p = participants_manager.get(participant_id)
+                if p:
+                    print(f"Participant left: {p['name']}")
+            transcript_writer.save_line(
                 bot_id,
                 "INFO : PARTICIPANT",
                 f"LEFT: {participant_name} ({participant_id})"
             )
-            print_active_bots()
+            bot_context.print_active_bot()
         
         else:
             print(f"Unhandled realtime event: {event_type}")
