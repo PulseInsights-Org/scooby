@@ -25,6 +25,8 @@ class GeminiLive():
         self.conversation_history = []
         self.chat_history = []
         self.current_transcription = ""
+        self.bot_id = None
+        self.participants = []
     
     async def _async_enumerate(self, aiterable):
         n = 0
@@ -63,8 +65,59 @@ class GeminiLive():
                 "required": ["query"],
             }
         )
+
+        send_chat_message_tool = FunctionDeclaration(
+            name="send_chat_message_tool",
+            description="Send a chat message to the current Recall meeting via the active bot.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The message text to send to the meeting chat"
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient scope, e.g., 'everyone'",
+                        "default": "everyone"
+                    },
+                    "pin": {
+                        "type": "boolean",
+                        "description": "Whether to pin the message in the meeting UI",
+                        "default": False
+                    }
+                },
+                "required": ["message"],
+            }
+        )
+
+        get_current_participants_tool = FunctionDeclaration(
+            name="get_current_participants",
+            description="Gets all participants who are currently in the meeting (status == 'joined').",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }
+        )
+
+        get_all_joined_participants_tool = FunctionDeclaration(
+            name="get_all_joined_participants",
+            description="Gets all participants who have joined the meeting, including those who later left.",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }
+        )
         
-        self.tools = [{"function_declarations": [pc_retrieval_tool, connections_retrieval_tool]}]
+        self.tools = [{"function_declarations": [
+            pc_retrieval_tool,
+            connections_retrieval_tool,
+            send_chat_message_tool,
+            get_current_participants_tool,
+            get_all_joined_participants_tool,
+        ]}]
     
     async def connect_to_gemini(self, text):
         async with self.client.aio.live.connect(
@@ -140,7 +193,22 @@ class GeminiLive():
                                     query = function_args.get("query")
                                     data = self.tool_executor.pc_retrieval_tool(query)
                                     
-                                    
+                                elif function_name == "send_chat_message_tool":
+                                    if not self.bot_id:
+                                        raise RuntimeError("No active bot_id set on model; cannot send chat message")
+                                    message = function_args.get("message")
+                                    to = function_args.get("to", "everyone")
+                                    pin = function_args.get("pin", False)
+                                    data = await self.tool_executor.send_chat_message_tool(self.bot_id, message, to, pin)
+                                
+                                elif function_name == "get_current_participants":
+                                    # return only active participants
+                                    data = [p for p in (self.participants or []) if p.get("status") == "joined"]
+                                
+                                elif function_name == "get_all_joined_participants":
+                                    # return the whole tracked list
+                                    data = self.participants or []
+                                
                                 else:
                                     data = {"error": f"Unknown function: {function_name}"}
                                 
