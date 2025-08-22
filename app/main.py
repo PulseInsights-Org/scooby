@@ -21,39 +21,40 @@ current_meeting_url = None
 participants = []  
 transcripts_enabled = False
 
-
-# Request models
-class AddScoobyRequest(BaseModel):
+class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
+    
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-# Directory to store transcripts
+
+TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
+
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
 
 def _safe_name(value: str) -> str:
     try:
         s = str(value or "unknown")
-        # Remove or replace characters invalid on Windows filenames
         for ch in '<>:"/\\|?*':
             s = s.replace(ch, '-')
-        # Also strip spaces at ends
         return s.strip().replace(os.sep, '-')
     except Exception:
         return "unknown"
 
-def _save_transcript_line(bot_id: str, meeting_id: str, speaker: str, text: str):
+def _save_transcript_line(bot_id: str, speaker: str, text: str):
     try:
-        # Respect transcript preference for the single active bot
         if not transcripts_enabled:
             return
         if not os.path.exists(TRANSCRIPTS_DIR):
             os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
         safe_bot = _safe_name(bot_id)
-        safe_meeting = _safe_name(meeting_id)
+        safe_meeting = _safe_name(current_meeting_url or "meeting")
         file_path = os.path.join(TRANSCRIPTS_DIR, f"{safe_bot}_{safe_meeting}.txt")
         with open(file_path, "a", encoding="utf-8") as f:
             f.write(f"{speaker}: {text}\n")
@@ -64,40 +65,6 @@ def _save_transcript_line(bot_id: str, meeting_id: str, speaker: str, text: str)
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# Directory to store transcripts
-TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
-
-def _safe_name(value: str) -> str:
-    try:
-        s = str(value or "unknown")
-        # Remove or replace characters invalid on Windows filenames
-        for ch in '<>:"/\\|?*':
-            s = s.replace(ch, '-')
-        # Also strip spaces at ends
-        return s.strip().replace(os.sep, '-')
-    except Exception:
-        return "unknown"
-
-def _save_transcript_line(bot_id: str, meeting_id: str, speaker: str, text: str):
-    try:
-        # Respect transcript preference for the single active bot
-        if not transcripts_enabled:
-            return
-        if not os.path.exists(TRANSCRIPTS_DIR):
-            os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
-        safe_bot = _safe_name(bot_id)
-        safe_meeting = _safe_name(meeting_id)
-        file_path = os.path.join(TRANSCRIPTS_DIR, f"{safe_bot}_{safe_meeting}.txt")
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(f"{speaker}: {text}\n")
-    except Exception as e:
-        print(f"Error saving transcript: {e}")
-
-# Static files (CSS/JS)
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-# Effective error handling 
 # todo - cors handling
 
 app.add_middleware(
@@ -138,7 +105,6 @@ def add_participant(participant_data):
                 'status': 'joined'
             })
             print(f"Updated participant: {participant_name}")
-        # Sync participants state to model for tools
         try:
             model.participants = list(participants)
         except Exception:
@@ -172,9 +138,14 @@ def remove_bot_context():
         current_bot_id = None
         current_meeting_url = None
         transcripts_enabled = False
-        # Also clear the model's active bot id
         try:
             model.bot_id = None
+            model.chat_history = []
+            model.conversation_history = []
+            try:
+                model.current_transcription = ""
+            except Exception:
+                pass
         except Exception:
             pass
         print("Cleared current bot context")
@@ -196,12 +167,10 @@ async def bot_html(request: Request):
     
     
 @app.post("/add_scooby")
-async def add_scooby_bot(payload: AddScoobyRequest):
-    meeting_url = payload.meeting_url
-    # New optional flag, defaults to False (handled by model)
-    is_transcript = payload.isTranscript
+async def add_scooby_bot(request: MeetingRequest):
+    meeting_url = request.meeting_url
+    is_transcript = request.isTranscript
     bot_id = await rb.add_bots(meeting_url)
-    # Overwrite any existing state to focus on a single bot
     if bot_id:
         global current_bot_id, current_meeting_url, transcripts_enabled
         current_bot_id = bot_id
@@ -240,45 +209,33 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket error for {connection_id}: {e}")
         cm.remove_connection(connection_id)
 
-
+# to do
 # refer recall docs to add more context to model
 # 1. participant data                 - done
 # 2. left event and join event        - done
-# 3. answer in chat                   - going onn
+# 3. answer in chat                   - done
 # 4. screen share                     - pending
-# 5. Include transcription feature    - pending
+# 5. Include transcription feature    - done
  
 @app.post("/api/webhook/recall/bot-status")
 async def recall_bot_status_webhook(request: Request):
-    """
-    Handle Bot Status Change Webhooks from Recall.ai
-    These are configured separately in the Recall dashboard
-    """
     print("Received BOT STATUS webhook from Recall.ai")
     try:
         payload = await request.json()
         print("Bot Status Payload:", payload)
         
-        event_type = payload.get("type")  # Note: different structure than realtime webhooks
+        event_type = payload.get("type")
         data = payload.get("data", {})
         
         if event_type == "bot.status_change":
             bot_id = data.get("id")
             status = data.get("status")
             sub_code = data.get("sub_code")
-            # Try to capture a meeting id if available for logging
-            meeting_id = (
-                data.get("meeting_id")
-                or (data.get("meeting") or {}).get("id")
-                or current_meeting_url
-                or "unknown"
-            )
             
             print(f"Bot {bot_id} status changed to: {status}")
             if sub_code:
                 print(f"Sub code: {sub_code}")
             
-            # Ignore statuses for non-current bot (single bot focus)
             if current_bot_id and bot_id != current_bot_id:
                 print(f"Ignoring status for non-current bot {bot_id}")
                 return {"status": "ok"}
@@ -286,30 +243,25 @@ async def recall_bot_status_webhook(request: Request):
             # Handle different bot statuses for the current bot
             if status == "joining_call":
                 print(f"Bot {bot_id} is joining the meeting")
-                # Bot is attempting to join
-                _save_transcript_line(bot_id, meeting_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
                 
             elif status == "in_call":
                 print(f"Bot {bot_id} successfully joined the meeting")
-                # Bot has successfully joined and is in the call
-                _save_transcript_line(bot_id, meeting_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
                 
             elif status == "in_call_recording":
                 print(f"Bot {bot_id} is now recording")
-                # Bot is actively recording
-                _save_transcript_line(bot_id, meeting_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
                 
             elif status == "call_ended":
                 print(f"Bot {bot_id} call ended")
-                # Call has ended normally
-                _save_transcript_line(bot_id, meeting_id, "BOT_STATUS", "Call ended")
+                _save_transcript_line(bot_id, "BOT_STATUS", "Call ended")
                 remove_bot_context()
                 print_active_bots()
                 
             elif status == "done":
                 print(f"Bot {bot_id} finished successfully")
-                # Bot completed successfully
-                _save_transcript_line(bot_id, meeting_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
                 remove_bot_context()
                 print_active_bots()
                 
@@ -317,8 +269,7 @@ async def recall_bot_status_webhook(request: Request):
                 print(f"Bot {bot_id} encountered a fatal error")
                 if sub_code:
                     print(f"Fatal error reason: {sub_code}")
-                # Bot failed with fatal error
-                _save_transcript_line(bot_id, meeting_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
+                _save_transcript_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
                 remove_bot_context()
                 print_active_bots()
                 
@@ -336,9 +287,6 @@ async def recall_bot_status_webhook(request: Request):
 
 @app.post("/api/webhook/recall")
 async def recall_webhook(request: Request):
-    """
-    Handle Real-Time Webhooks from Recall.ai (transcript, participant events)
-    """
     print("Received REALTIME webhook from Recall.ai")
     try:
         payload = await request.json()
@@ -348,21 +296,11 @@ async def recall_webhook(request: Request):
         data = payload.get("data", {})
         bot_info = data.get("bot", {})
         bot_id = bot_info.get("id")
-        # Try to extract a meeting identifier from common fields
-        meeting_id = (
-            bot_info.get("meeting_id")
-            or data.get("meeting_id")
-            or (data.get("meeting") or {}).get("id")
-            or current_meeting_url
-            or "unknown"
-        )
 
-        # If no bot added yet via /add_scooby, ignore realtime events
         if current_bot_id is None:
             print("No current bot set; ignoring realtime event")
             return {"status": "ok"}
 
-        # Ignore events for non-current bot to keep single-bot context simple
         if current_bot_id and bot_id != current_bot_id:
             print(f"Ignoring realtime event for non-current bot {bot_id}")
             return {"status": "ok"}
@@ -372,7 +310,7 @@ async def recall_webhook(request: Request):
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
             print(f"Transcribed text from {speaker}: {spoken_text}")
-            _save_transcript_line(bot_id, meeting_id, speaker, spoken_text)
+            _save_transcript_line(bot_id, speaker, spoken_text)
     
             
             if "scooby" in spoken_text.lower():
@@ -398,10 +336,8 @@ async def recall_webhook(request: Request):
                 add_participant(participant_data)
                 print(f"Total participants: {len(participants)}")
                 print_active_bots()
-                # Log to transcript
                 _save_transcript_line(
                     bot_id,
-                    meeting_id,
                     "INFO : PARTICIPANT",
                     f"JOINED : {participant_data.get('name')} ({participant_data.get('id')})"
                 )
@@ -411,21 +347,17 @@ async def recall_webhook(request: Request):
             participant_id = participant_data["id"]
             participant_name = participant_data["name"]
             
-            # Note: Don't handle bot leaving here, use bot status webhooks instead
             if participant_name.lower() != "scooby":
                 participant = get_participant_by_id(participant_id)
                 if participant:
                     participant['status'] = 'left'
                     print(f"Participant left: {participant['name']}")
-            # Sync participants state to model for tools
             try:
                 model.participants = list(participants)
             except Exception:
                 pass
-            # Log to transcript
             _save_transcript_line(
                 bot_id,
-                meeting_id,
                 "INFO : PARTICIPANT",
                 f"LEFT: {participant_name} ({participant_id})"
             )

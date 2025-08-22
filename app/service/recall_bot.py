@@ -3,7 +3,7 @@ from fastapi import HTTPException
 
 
 # 1. Effective error handling
-# 2. Bot leaving meeting handling
+# 2. Bot leaving meeting handling -         handled 
 # 3. Other events to be caputred if needed -> Docs.
 
 
