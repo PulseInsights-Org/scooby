@@ -2,11 +2,6 @@ import httpx
 from fastapi import HTTPException
 
 
-# 1. Effective error handling
-# 2. Bot leaving meeting handling -         handled 
-# 3. Other events to be caputred if needed -> Docs.
-
-
 class RecallBot():
     def __init__(self) -> None:
         pass
@@ -23,7 +18,7 @@ class RecallBot():
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://d99f2b1a163c.ngrok-free.app/api/webhook/recall",
+                        "url": "https://95b3eb3c1f62.ngrok-free.app/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
@@ -41,7 +36,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://d99f2b1a163c.ngrok-free.app/"
+                        "url": "https://95b3eb3c1f62.ngrok-free.app/"
                     }
                 }
             },
@@ -135,5 +130,5 @@ class RecallBot():
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     
-    def handle_bot_removal(self):
-        pass
+    
+    

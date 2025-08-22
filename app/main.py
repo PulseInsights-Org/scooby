@@ -1,3 +1,4 @@
+from turtle import mode
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from app.service.recall_bot import RecallBot
@@ -20,23 +21,17 @@ current_bot_id = None
 current_meeting_url = None
 participants = []  
 transcripts_enabled = False
+processed_audio_segments = set()
 
 class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
-    
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-
-
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
-
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
 
 def _safe_name(value: str) -> str:
     try:
@@ -61,11 +56,17 @@ def _save_transcript_line(bot_id: str, speaker: str, text: str):
     except Exception as e:
         print(f"Error saving transcript: {e}")
 
-# Static files (CSS/JS)
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
+    """Simple check if this exact audio segment was already processed"""
+    segment_key = f"{start_time}:{end_time}:{speaker}"
+    
+    if segment_key in processed_audio_segments:
+        print(f"Duplicate audio segment detected: {start_time}s to {end_time}s from {speaker}")
+        return True
+        
+    processed_audio_segments.add(segment_key)
+    return False
 
-# todo - cors handling
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,91 +76,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def add_participant(participant_data):
-    try:
-        participant_id = participant_data.get('id')
-        participant_name = participant_data.get('name')
-        
-        if not participant_id or not participant_name:
-            print(f"Invalid participant data: {participant_data}")
-            return
-        
-        existing_participant = next((p for p in participants if p['id'] == participant_id), None)
-        
-        if not existing_participant:
-            participants.append({
-                'id': participant_id,
-                'name': participant_name,
-                'is_host': participant_data.get('is_host', False),
-                'platform': participant_data.get('platform', 'unknown'),
-                'extra_data': participant_data.get('extra_data', {}),
-                'status': 'joined'
-            })
-            print(f"Added participant: {participant_name}")
-        else:
-            existing_participant.update({
-                'name': participant_name,
-                'is_host': participant_data.get('is_host', False),
-                'platform': participant_data.get('platform', 'unknown'),
-                'extra_data': participant_data.get('extra_data', {}),
-                'status': 'joined'
-            })
-            print(f"Updated participant: {participant_name}")
-        try:
-            model.participants = list(participants)
-        except Exception:
-            pass
-            
-    except Exception as e:
-        print(f"Error managing participant: {e}")
-
-def get_participant_by_id(participant_id):
-    try:
-        return next((p for p in participants if p['id'] == participant_id), None)
-    except Exception as e:
-        print(f"Error getting participant: {e}")
-        return None
-
-def reset_participants():
-    try:
-        participants.clear()
-        try:
-            model.participants = []
-        except Exception:
-            pass
-        print("Participant context reset")
-    except Exception as e:
-        print(f"Error resetting participants: {e}")
-
-def remove_bot_context():
-    try:
-        global current_bot_id, current_meeting_url, transcripts_enabled
-        reset_participants()
-        current_bot_id = None
-        current_meeting_url = None
-        transcripts_enabled = False
-        try:
-            model.bot_id = None
-            model.chat_history = []
-            model.conversation_history = []
-            try:
-                model.current_transcription = ""
-            except Exception:
-                pass
-        except Exception:
-            pass
-        print("Cleared current bot context")
-    except Exception as e:
-        print(f"Error removing bot context: {e}")
-
-
-def print_active_bots():
-    try:
-        print(f"Current active bot: {current_bot_id}")
-    except Exception as e:
-        print(f"Error printing active bots: {e}")
-
-# todo - change to pydantic base model of request type and add meeting url as parameter
 
 @app.get("/")
 async def bot_html(request: Request):
@@ -177,7 +93,8 @@ async def add_scooby_bot(request: MeetingRequest):
         current_meeting_url = meeting_url
         transcripts_enabled = is_transcript
         reset_participants()
-        # Propagate bot id to model so tools can use it
+
+        processed_audio_segments.clear()
         try:
             model.bot_id = bot_id
         except Exception:
@@ -209,13 +126,6 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket error for {connection_id}: {e}")
         cm.remove_connection(connection_id)
 
-# to do
-# refer recall docs to add more context to model
-# 1. participant data                 - done
-# 2. left event and join event        - done
-# 3. answer in chat                   - done
-# 4. screen share                     - pending
-# 5. Include transcription feature    - done
  
 @app.post("/api/webhook/recall/bot-status")
 async def recall_bot_status_webhook(request: Request):
@@ -240,7 +150,6 @@ async def recall_bot_status_webhook(request: Request):
                 print(f"Ignoring status for non-current bot {bot_id}")
                 return {"status": "ok"}
 
-            # Handle different bot statuses for the current bot
             if status == "joining_call":
                 print(f"Bot {bot_id} is joining the meeting")
                 _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
@@ -262,7 +171,7 @@ async def recall_bot_status_webhook(request: Request):
             elif status == "done":
                 print(f"Bot {bot_id} finished successfully")
                 _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
-                remove_bot_context()
+                rb.remove_bot_context()
                 print_active_bots()
                 
             elif status == "fatal":
@@ -309,6 +218,17 @@ async def recall_webhook(request: Request):
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
+            
+            # Get audio segment timestamps for deduplication
+            start_time = words[0]["start_timestamp"]["relative"]
+            end_time = words[-1]["end_timestamp"]["relative"]
+            
+            print(f"Processing audio segment: {start_time}s to {end_time}s from {speaker}")
+            
+            if _is_duplicate_audio_segment(start_time, end_time, speaker):
+                print(f"Skipping duplicate audio segment from {speaker}")
+                return {"status": "ok"}
+            
             print(f"Transcribed text from {speaker}: {spoken_text}")
             _save_transcript_line(bot_id, speaker, spoken_text)
     
@@ -370,3 +290,90 @@ async def recall_webhook(request: Request):
         print(f"Error processing realtime webhook: {e}")
 
     return {"status": "ok"}
+
+def get_participant_by_id(participant_id):
+    try:
+        return next((p for p in participants if p['id'] == participant_id), None)
+    except Exception as e:
+        print(f"Error getting participant: {e}")
+        return None
+
+def reset_participants():
+    try:
+        participants.clear()
+        try:
+            model.participants = []
+        except Exception:
+            pass
+        print("Participant context reset")
+    except Exception as e:
+        print(f"Error resetting participants: {e}")
+
+def add_participant(participant_data):
+        try:
+            participant_id = participant_data.get('id')
+            participant_name = participant_data.get('name')
+            
+            if not participant_id or not participant_name:
+                print(f"Invalid participant data: {participant_data}")
+                return
+            
+            existing_participant = next((p for p in participants if p['id'] == participant_id), None)
+            
+            if not existing_participant:
+                participants.append({
+                    'id': participant_id,
+                    'name': participant_name,
+                    'is_host': participant_data.get('is_host', False),
+                    'platform': participant_data.get('platform', 'unknown'),
+                    'extra_data': participant_data.get('extra_data', {}),
+                    'status': 'joined'
+                })
+                print(f"Added participant: {participant_name}")
+            else:
+                existing_participant.update({
+                    'name': participant_name,
+                    'is_host': participant_data.get('is_host', False),
+                    'platform': participant_data.get('platform', 'unknown'),
+                    'extra_data': participant_data.get('extra_data', {}),
+                    'status': 'joined'
+                })
+                print(f"Updated participant: {participant_name}")
+            try:
+                model.participants = list(participants)
+            except Exception:
+                pass
+                
+        except Exception as e:
+            print(f"Error managing participant: {e}")
+
+
+def remove_bot_context():
+        try:
+            global current_bot_id, current_meeting_url, transcripts_enabled
+            reset_participants()
+            # Reset audio segment cache
+            processed_audio_segments.clear()
+            current_bot_id = None
+            current_meeting_url = None
+            transcripts_enabled = False
+            try:
+                model.bot_id = None
+                model.chat_history = []
+                model.conversation_history = []
+                try:
+                    model.current_transcription = ""
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            print("Cleared current bot context")
+        except Exception as e:
+            print(f"Error removing bot context: {e}")
+
+
+def print_active_bots():
+        try:
+            print(f"Current active bot: {current_bot_id}")
+        except Exception as e:
+            print(f"Error printing active bots: {e}")

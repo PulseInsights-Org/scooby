@@ -27,7 +27,7 @@ async function initAudio() {
 }
 
 function connectWebSocket() { 
-    const wsUrl = `wss://d99f2b1a163c.ngrok-free.app/ws`;
+    const wsUrl = `wss://95b3eb3c1f62.ngrok-free.app/ws`;
     console.group("connectWebSocket()");
     console.log("🌐 Connecting to:", wsUrl);
     
