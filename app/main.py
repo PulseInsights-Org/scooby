@@ -9,6 +9,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import os
 
 
+
 rb = RecallBot()
 app = FastAPI()
 cm = ConnectionManager()
@@ -84,7 +85,6 @@ async def recall_webhook(request: Request):
     print("Received webhook from Recall.ai")
     try:
         payload = await request.json()
-        print(payload)
         
         event_type = payload.get("event")
         
@@ -94,13 +94,14 @@ async def recall_webhook(request: Request):
 
             spoken_text = " ".join([w["text"] for w in words])
             print(f"Transcribed text from {speaker}: {spoken_text}")
+    
             
             if "scooby" in spoken_text.lower():
                 print(f"Scooby mentioned by {speaker}: {spoken_text}")
-                
                 try:
+                    print(f"Sending to Gemini: {spoken_text}")
                     await model.connect_to_gemini(text=spoken_text)
-                   
+                    print("Sent to Gemini successfully")
                 except Exception as e:
                     print(f"Error sending to Gemini: {e}")
             
