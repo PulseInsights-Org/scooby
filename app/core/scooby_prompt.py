@@ -50,6 +50,7 @@ def prompt():
     - "Sure, I'll send that message right away"
     - "Got it, posting that to the chat now"
     - "Alright, I'll put that message up for everyone"
+    Note : acknowledge by saying, "Let me know you see it?" after funtion call
     ---
     ## Communication Style
     - Sound natural and conversational, like a thoughtful colleague
