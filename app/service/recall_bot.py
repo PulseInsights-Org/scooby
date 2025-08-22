@@ -23,7 +23,7 @@ class RecallBot():
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://304602d056cb.ngrok-free.app/api/webhook/recall",
+                        "url": "https://9ea1e96036c1.ngrok-free.app/api/webhook/recall",
                         "events": ["transcript.data","participant_events.join"]
                     }
                 ],
@@ -37,7 +37,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://304602d056cb.ngrok-free.app/"
+                        "url": "https://9ea1e96036c1.ngrok-free.app/"
                     }
                 }
             },

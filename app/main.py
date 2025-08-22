@@ -9,7 +9,6 @@ from fastapi import WebSocket, WebSocketDisconnect
 import os
 
 
-
 rb = RecallBot()
 app = FastAPI()
 cm = ConnectionManager()
@@ -19,9 +18,10 @@ model = GeminiLive(connection_manager=cm)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
+class MeetingRequest(BaseModel):
+    meeting_url : str
 
 # Effective error handling 
-
 # todo - cors handling
 
 app.add_middleware(
@@ -32,21 +32,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# todo - change to pydantic base model of request type and add meeting url as parameter
-
 @app.get("/")
 async def bot_html(request: Request):
     return templates.TemplateResponse("bot.html", {"request": request})
     
     
 @app.post("/add_scooby")
-async def add_scooby_bot(request : Request):
+async def add_scooby_bot(request : MeetingRequest):
     
-    data = await request.json()
-    meeting_url = data.get("meeting_url")
+    meeting_url = request.meeting_url
     bot_id = await rb.add_bots(meeting_url)
-    return None
+
+    return {
+        "message" : "succefully added meeting bot",
+        "bot_id" : bot_id
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -87,7 +87,6 @@ async def recall_webhook(request: Request):
         payload = await request.json()
         
         event_type = payload.get("event")
-        
         if event_type == "transcript.data":
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
@@ -105,6 +104,12 @@ async def recall_webhook(request: Request):
                 except Exception as e:
                     print(f"Error sending to Gemini: {e}")
             
+            else:
+                model.chat_history.append(
+                   { "role": "user",
+                    "content": spoken_text.strip(),
+                    "type": "audio_response"}
+                )
         
         # elif event_type == "participant_events.join":
         #     participant_data = payload["data"]["data"]["participant"]
