@@ -27,9 +27,6 @@ class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
 
-class QueryRequest(BaseModel):
-    question: str
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
@@ -134,6 +131,7 @@ async def websocket_endpoint(websocket: WebSocket):
         cm.remove_connection(connection_id)
     except Exception as e:
         print(f"WebSocket error for {connection_id}: {e}")
+        cm.remove_connection(connection_id)
 
  
 @app.post("/api/webhook/recall/bot-status")
@@ -300,17 +298,6 @@ async def recall_webhook(request: Request):
 
     return {"status": "ok"}
 
-@app.post("/query")
-async def query_endpoint(request: QueryRequest):
-    print(f"Received query: {request.question}")
-    try:
-        response = await model.query_gemini_text(request.question)
-        print(f"Gemini response: {response}")
-        return {"response": response}
-    except Exception as e:
-        print(f"Error processing query: {e}")
-        return {"error": str(e)}
-
 def get_participant_by_id(participant_id):
     try:
         return next((p for p in participants if p['id'] == participant_id), None)
@@ -397,8 +384,3 @@ def print_active_bots():
             print(f"Current active bot: {current_bot_id}")
         except Exception as e:
             print(f"Error printing active bots: {e}")
-
-if __name__ == "__main__":
-    import uvicorn
-    print("Starting Scooby server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)

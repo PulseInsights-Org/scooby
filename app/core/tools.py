@@ -18,32 +18,9 @@ rb = RecallBot()
 class GeminiTools():
     
     def __init__(self):
-        # Initialize Neo4j only if environment variables are set
-        if NEO4J_URI and NEO4J_USER and NEO4J_PASSWORD:
-            try:
-                self.builder = Neo4jDriver(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
-                print("Neo4j connection initialized successfully")
-            except Exception as e:
-                print(f"Warning: Failed to initialize Neo4j: {e}")
-                self.builder = None
-        else:
-            print("Warning: Neo4J environment variables not set. Graph queries will not work.")
-            self.builder = None
-            
-        # Initialize Pinecone
-        pinecone_key = os.getenv("PINECONE_API_KEY", "")
-        pinecone_index = os.getenv("PINECONE_INDEX_NAME", "main-events-index")
-        if pinecone_key:
-            try:
-                self.pc = PineconeStore(api_key=pinecone_key, index_name=pinecone_index)
-                self.pc.setup_indexes()
-                print(f"Pinecone connection initialized successfully with index: {pinecone_index}")
-            except Exception as e:
-                print(f"Warning: Failed to initialize Pinecone: {e}")
-                self.pc = None
-        else:
-            print("Warning: PINECONE_API_KEY not set. Vector search will not work.")
-            self.pc = None
+        self.builder = Neo4jDriver(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
+        self.pc =  PineconeStore(api_key=os.getenv("PINECONE_API_KEY", ""), index_name="idx-pulse-dev")
+        self.pc.setup_indexes()
     
     def get_event_connections(self, event_names: List[str]):
     
