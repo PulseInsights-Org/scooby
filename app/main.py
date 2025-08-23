@@ -1,4 +1,3 @@
-from turtle import mode
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from app.service.recall_bot import RecallBot
