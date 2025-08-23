@@ -9,23 +9,41 @@ from app.core.manage_connections import ConnectionManager
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 import os
-
+import logging
+import asyncio
+from app.service.transcript_ingestion import TranscriptIngestion
 
 rb = RecallBot()
 app = FastAPI()
 cm = ConnectionManager()
 model = GeminiLive(connection_manager=cm)
+ti = TranscriptIngestion(org_id="")
 
+# Configure logging early so all modules use it
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 current_bot_id = None
 current_meeting_url = None
 participants = []  
 transcripts_enabled = False
 processed_audio_segments = set()
+current_x_org_id = None
+current_tenant_id = None
+# Guard to prevent duplicate transcript ingestion
+transcript_ingestion_lock = asyncio.Lock()
+transcript_ingested_bots = set()
 
 class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
+    x_org_id: str 
+    tenant_id: str 
+    saveTranscript: bool = True
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -56,6 +74,40 @@ def _save_transcript_line(bot_id: str, speaker: str, text: str):
     except Exception as e:
         print(f"Error saving transcript: {e}")
 
+def _transcript_file_path(bot_id: str) -> str:
+    try:
+        safe_bot = _safe_name(bot_id)
+        safe_meeting = _safe_name(current_meeting_url or "meeting")
+        return os.path.join(TRANSCRIPTS_DIR, f"{safe_bot}_{safe_meeting}.txt")
+    except Exception:
+        return os.path.join(TRANSCRIPTS_DIR, "unknown_meeting.txt")
+
+async def _ingest_and_cleanup_transcript(bot_id: str):
+    try:
+        if not transcripts_enabled:
+            return
+        # Ensure only one ingestion per bot even if multiple status events fire
+        async with transcript_ingestion_lock:
+            if bot_id in transcript_ingested_bots:
+                logger.info("Transcript ingestion already performed for bot %s; skipping", bot_id)
+                return
+            transcript_ingested_bots.add(bot_id)
+        transcript_path = _transcript_file_path(bot_id)
+        if not os.path.exists(transcript_path):
+            logger.warning("Transcript file not found at %s", transcript_path)
+            return
+        logger.info("Starting transcript ingestion for %s", transcript_path)
+        res = await ti.ingest_transcript(current_x_org_id, current_tenant_id, transcript_path)
+        logger.info("Transcript ingestion result: %s", res)
+        if res and res.get("success"):
+            try:
+                os.remove(transcript_path)
+                logger.info("Deleted transcript file %s", transcript_path)
+            except Exception as de:
+                logger.error("Failed to delete transcript file %s: %s", transcript_path, de)
+    except Exception as e:
+        logger.exception("Error during transcript ingestion: %s", e)
+
 def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
     """Simple check if this exact audio segment was already processed"""
     segment_key = f"{start_time}:{end_time}:{speaker}"
@@ -84,7 +136,7 @@ async def bot_html(request: Request):
     
 @app.post("/add_scooby")
 async def add_scooby_bot(request: MeetingRequest):
-    global current_bot_id, current_meeting_url, transcripts_enabled
+    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
     
     if current_bot_id is not None:
         return {
@@ -92,16 +144,20 @@ async def add_scooby_bot(request: MeetingRequest):
         }
     
     meeting_url = request.meeting_url
-    is_transcript = request.isTranscript
+    is_transcript = request.saveTranscript or request.isTranscript
     bot_id = await rb.add_bots(meeting_url)
     if bot_id:
         
         current_bot_id = bot_id
         current_meeting_url = meeting_url
-        transcripts_enabled = is_transcript
+        transcripts_enabled = bool(is_transcript)
+        current_x_org_id = request.x_org_id
+        current_tenant_id = request.tenant_id
         reset_participants()
 
         processed_audio_segments.clear()
+        # Reset ingestion guard when a new bot is added
+        transcript_ingested_bots.clear()
         try:
             model.bot_id = bot_id
         except Exception:
@@ -141,13 +197,14 @@ async def recall_bot_status_webhook(request: Request):
         payload = await request.json()
         print("Bot Status Payload:", payload)
         
-        event_type = payload.get("type")
+        # Support both legacy ('type','status') and new ('event','data.code') payloads
+        event_type = payload.get("type") or payload.get("event")
         data = payload.get("data", {})
+        bot_id = data.get("id") or data.get("bot", {}).get("id")
+        status = data.get("status") or (data.get("data", {}) or {}).get("code")
+        sub_code = data.get("sub_code") or (data.get("data", {}) or {}).get("sub_code")
         
-        if event_type == "bot.status_change":
-            bot_id = data.get("id")
-            status = data.get("status")
-            sub_code = data.get("sub_code")
+        if event_type == "bot.status_change" or status is not None:
             
             print(f"Bot {bot_id} status changed to: {status}")
             if sub_code:
@@ -172,22 +229,32 @@ async def recall_bot_status_webhook(request: Request):
             elif status == "call_ended":
                 print(f"Bot {bot_id} call ended")
                 _save_transcript_line(bot_id, "BOT_STATUS", "Call ended")
-                remove_bot_context()
-                print_active_bots()
+                # Ingest transcript before clearing context
+                try:
+                    await _ingest_and_cleanup_transcript(bot_id)
+                finally:
+                    remove_bot_context()
+                    print_active_bots()
                 
             elif status == "done":
                 print(f"Bot {bot_id} finished successfully")
                 _save_transcript_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
-                rb.remove_bot_context()
-                print_active_bots()
+                try:
+                    await _ingest_and_cleanup_transcript(bot_id)
+                finally:
+                    rb.remove_bot_context()
+                    print_active_bots()
                 
             elif status == "fatal":
                 print(f"Bot {bot_id} encountered a fatal error")
                 if sub_code:
                     print(f"Fatal error reason: {sub_code}")
                 _save_transcript_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
-                remove_bot_context()
-                print_active_bots()
+                try:
+                    await _ingest_and_cleanup_transcript(bot_id)
+                finally:
+                    remove_bot_context()
+                    print_active_bots()
                 
             else:
                 print(f"Unhandled bot status: {status}")
@@ -361,6 +428,8 @@ def remove_bot_context():
             reset_participants()
             # Reset audio segment cache
             processed_audio_segments.clear()
+            # Reset transcript ingestion guard
+            transcript_ingested_bots.clear()
             current_bot_id = None
             current_meeting_url = None
             transcripts_enabled = False
