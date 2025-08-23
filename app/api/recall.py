@@ -6,6 +6,7 @@ from app.core.manage_connections import ConnectionManager
 from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
 from app.core.utils import TranscriptWriter, BotContext
+from app.service.transcript_ingestion import TranscriptIngestion
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ model = GeminiLive(connection_manager=cm)
 current_bot_id = None
 current_meeting_url = None
 transcripts_enabled = False
+current_x_org_id = None
+current_tenant_id = None
 
 transcript_writer = TranscriptWriter(
     enabled_getter=lambda: transcripts_enabled,
@@ -30,22 +33,25 @@ transcript_writer = TranscriptWriter(
     meeting_url_getter=lambda: current_meeting_url,
 )
 
+# Transcript ingestion client instance used during bot end states
+ti = TranscriptIngestion(org_id="")
 
 def _set_inactive():
-    global current_bot_id, current_meeting_url, transcripts_enabled
+    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
     current_bot_id = None
     current_meeting_url = None
     transcripts_enabled = False
+    current_x_org_id = None
+    current_tenant_id = None
     try:
         bot_context.clear()
         BotContext.remove_model_context(model)
     except Exception:
         pass
 
-
-async def add_bot(meeting_url: str, is_transcript: bool = False) -> str | None:
+async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_id: str, tenant_id: str) -> str | None:
     """Create a Recall bot and update local module state."""
-    global current_bot_id, current_meeting_url, transcripts_enabled
+    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
     # Enforce single active bot at a time
     if current_bot_id is not None:
         # A bot is already active; do not create another
@@ -55,6 +61,8 @@ async def add_bot(meeting_url: str, is_transcript: bool = False) -> str | None:
         current_bot_id = bot_id
         current_meeting_url = meeting_url
         transcripts_enabled = is_transcript
+        current_x_org_id = x_org_id
+        current_tenant_id = tenant_id
         try:
             bot_context.bot_id = bot_id
             bot_context.meeting_url = meeting_url
@@ -136,6 +144,16 @@ async def recall_bot_status_webhook(request: Request):
                 logger.info(f"Bot {bot_id} call ended")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", "Call ended")
                 try:
+                    await BotContext.ingest_and_cleanup_transcript(
+                        bot_id,
+                        transcripts_enabled=transcripts_enabled,
+                        transcripts_dir=TRANSCRIPTS_DIR,
+                        meeting_url=current_meeting_url,
+                        ti=ti,
+                        x_org_id=current_x_org_id,
+                        tenant_id=current_tenant_id,
+                        logger=logger,
+                    )
                     participants_manager.reset()
                     try:
                         model.participants = []
@@ -150,6 +168,16 @@ async def recall_bot_status_webhook(request: Request):
                 logger.info(f"Bot {bot_id} finished successfully")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
                 try:
+                    await BotContext.ingest_and_cleanup_transcript(
+                        bot_id,
+                        transcripts_enabled=transcripts_enabled,
+                        transcripts_dir=TRANSCRIPTS_DIR,
+                        meeting_url=current_meeting_url,
+                        ti=ti,
+                        x_org_id=current_x_org_id,
+                        tenant_id=current_tenant_id,
+                        logger=logger,
+                    )
                     participants_manager.reset()
                     try:
                         model.participants = []
@@ -166,6 +194,16 @@ async def recall_bot_status_webhook(request: Request):
                     logger.error(f"Fatal error reason: {sub_code}")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
                 try:
+                    await BotContext.ingest_and_cleanup_transcript(
+                        bot_id,
+                        transcripts_enabled=transcripts_enabled,
+                        transcripts_dir=TRANSCRIPTS_DIR,
+                        meeting_url=current_meeting_url,
+                        ti=ti,
+                        x_org_id=current_x_org_id,
+                        tenant_id=current_tenant_id,
+                        logger=logger,
+                    )
                     participants_manager.reset()
                     try:
                         model.participants = []

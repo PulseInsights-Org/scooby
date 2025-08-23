@@ -1,6 +1,7 @@
 import os
 from typing import Callable
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -92,3 +93,51 @@ class BotContext:
             logger.info(f"Current active bot: {self.bot_id}")
         except Exception as e:
             logger.exception(f"Error printing active bots: {e}")
+
+    # Shared guard to avoid duplicate ingestions per bot
+    _transcript_ingestion_lock = asyncio.Lock()
+    _transcript_ingested_bots = set()
+
+    @staticmethod
+    async def ingest_and_cleanup_transcript(
+        bot_id: str,
+        *,
+        transcripts_enabled: bool,
+        transcripts_dir: str,
+        meeting_url: str | None,
+        ti,  # TranscriptIngestion instance
+        x_org_id: str,
+        tenant_id: str,
+        logger: logging.Logger,
+    ) -> None:
+        try:
+            if not transcripts_enabled:
+                return
+            # Build transcript file path
+            safe_bot = BotContext.safe_name(bot_id)
+            safe_meeting = BotContext.safe_name(meeting_url or "meeting")
+            transcript_path = os.path.join(transcripts_dir, f"{safe_bot}_{safe_meeting}.txt")
+
+            # Ensure only one ingestion per bot
+            async with BotContext._transcript_ingestion_lock:
+                if bot_id in BotContext._transcript_ingested_bots:
+                    logger.info("Transcript ingestion already performed for bot %s; skipping", bot_id)
+                    return
+                BotContext._transcript_ingested_bots.add(bot_id)
+
+            if not os.path.exists(transcript_path):
+                logger.warning("Transcript file not found at %s", transcript_path)
+                return
+
+            logger.info("Starting transcript ingestion for %s", transcript_path)
+            res = await ti.ingest_transcript(x_org_id, tenant_id, transcript_path)
+            logger.info("Transcript ingestion result: %s", res)
+
+            if res and res.get("success"):
+                try:
+                    os.remove(transcript_path)
+                    logger.info("Deleted transcript file %s", transcript_path)
+                except Exception as de:
+                    logger.error("Failed to delete transcript file %s: %s", transcript_path, de)
+        except Exception as e:
+            logger.exception("Error during transcript ingestion: %s", e)
