@@ -1,4 +1,7 @@
 from typing import Dict, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ParticipantsManager:
@@ -23,7 +26,7 @@ class ParticipantsManager:
             participant_id = data.get("id")
             participant_name = data.get("name")
             if not participant_id or not participant_name:
-                print(f"Invalid participant data: {data}")
+                logger.warning(f"Invalid participant data: {data}")
                 return
 
             existing = next((p for p in self._list if p["id"] == participant_id), None)
@@ -37,10 +40,10 @@ class ParticipantsManager:
             }
             if existing is None:
                 self._list.append(payload)
-                print(f"Added participant: {participant_name}")
+                logger.info(f"Added participant: {participant_name}")
             else:
                 existing.update(payload)
-                print(f"Updated participant: {participant_name}")
+                logger.info(f"Updated participant: {participant_name}")
         finally:
             pass
 
@@ -48,7 +51,7 @@ class ParticipantsManager:
         try:
             return next((p for p in self._list if p["id"] == participant_id), None)
         except Exception as e:
-            print(f"Error getting participant: {e}")
+            logger.exception(f"Error getting participant: {e}")
             return None
 
     def mark_left(self, participant_id: str) -> None:

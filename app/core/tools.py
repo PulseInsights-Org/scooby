@@ -4,6 +4,9 @@ from app.service.graph_store import Neo4jDriver
 from dotenv import load_dotenv
 from typing import List
 from app.service.recall_bot import RecallBot
+import logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -36,8 +39,7 @@ class GeminiTools():
         return self.builder._run(cypher, names=[e for e in event_names])
     
     def pc_retrieval_tool(self, query):
-        
-        print("fetching from Pinecone")
+        logger.info("fetching from Pinecone")
         results = self.pc.search_main_events(query_text=query)
         return results["results"]
 

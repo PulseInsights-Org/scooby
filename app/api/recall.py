@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 import os
+import logging
 from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
 from app.service.gemini_live import GeminiLive
@@ -7,6 +8,7 @@ from app.service.participants import ParticipantsManager
 from app.core.utils import TranscriptWriter, BotContext
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
@@ -44,6 +46,10 @@ def _set_inactive():
 async def add_bot(meeting_url: str, is_transcript: bool = False) -> str | None:
     """Create a Recall bot and update local module state."""
     global current_bot_id, current_meeting_url, transcripts_enabled
+    # Enforce single active bot at a time
+    if current_bot_id is not None:
+        # A bot is already active; do not create another
+        return None
     bot_id = await rb.add_bots(meeting_url)
     if bot_id:
         current_bot_id = bot_id
@@ -85,19 +91,19 @@ async def websocket_endpoint(websocket: WebSocket):
             _ = await websocket.receive_text()
 
     except WebSocketDisconnect:
-        print(f"WebSocket {connection_id} disconnected")
+        logger.info(f"WebSocket {connection_id} disconnected")
         cm.remove_connection(connection_id)
     except Exception as e:
-        print(f"WebSocket error for {connection_id}: {e}")
+        logger.exception(f"WebSocket error for {connection_id}: {e}")
         cm.remove_connection(connection_id)
 
 
 @router.post("/api/webhook/recall/bot-status")
 async def recall_bot_status_webhook(request: Request):
-    print("Received BOT STATUS webhook from Recall.ai")
+    logger.info("Received BOT STATUS webhook from Recall.ai")
     try:
         payload = await request.json()
-        print("Bot Status Payload:", payload)
+        logger.debug(f"Bot Status Payload: {payload}")
         event_type = payload.get("type")
         data = payload.get("data", {})
 
@@ -106,28 +112,28 @@ async def recall_bot_status_webhook(request: Request):
             status = data.get("status")
             sub_code = data.get("sub_code")
 
-            print(f"Bot {bot_id} status changed to: {status}")
+            logger.info(f"Bot {bot_id} status changed to: {status}")
             if sub_code:
-                print(f"Sub code: {sub_code}")
+                logger.info(f"Sub code: {sub_code}")
 
             if current_bot_id and bot_id != current_bot_id:
-                print(f"Ignoring status for non-current bot {bot_id}")
+                logger.debug(f"Ignoring status for non-current bot {bot_id}")
                 return {"status": "ok"}
 
             if status == "joining_call":
-                print(f"Bot {bot_id} is joining the meeting")
+                logger.info(f"Bot {bot_id} is joining the meeting")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
 
             elif status == "in_call":
-                print(f"Bot {bot_id} successfully joined the meeting")
+                logger.info(f"Bot {bot_id} successfully joined the meeting")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
 
             elif status == "in_call_recording":
-                print(f"Bot {bot_id} is now recording")
+                logger.info(f"Bot {bot_id} is now recording")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
 
             elif status == "call_ended":
-                print(f"Bot {bot_id} call ended")
+                logger.info(f"Bot {bot_id} call ended")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", "Call ended")
                 try:
                     participants_manager.reset()
@@ -137,11 +143,11 @@ async def recall_bot_status_webhook(request: Request):
                         pass
                     _set_inactive()
                 except Exception:
-                    pass
+                    logger.exception("Error while handling call_ended cleanup")
                 bot_context.print_active_bot()
 
             elif status == "done":
-                print(f"Bot {bot_id} finished successfully")
+                logger.info(f"Bot {bot_id} finished successfully")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
                 try:
                     participants_manager.reset()
@@ -151,13 +157,13 @@ async def recall_bot_status_webhook(request: Request):
                         pass
                     _set_inactive()
                 except Exception:
-                    pass
+                    logger.exception("Error while handling done cleanup")
                 bot_context.print_active_bot()
 
             elif status == "fatal":
-                print(f"Bot {bot_id} encountered a fatal error")
+                logger.error(f"Bot {bot_id} encountered a fatal error")
                 if sub_code:
-                    print(f"Fatal error reason: {sub_code}")
+                    logger.error(f"Fatal error reason: {sub_code}")
                 transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
                 try:
                     participants_manager.reset()
@@ -167,27 +173,27 @@ async def recall_bot_status_webhook(request: Request):
                         pass
                     _set_inactive()
                 except Exception:
-                    pass
+                    logger.exception("Error while handling fatal cleanup")
                 bot_context.print_active_bot()
 
             else:
-                print(f"Unhandled bot status: {status}")
+                logger.warning(f"Unhandled bot status: {status}")
 
         else:
-            print(f"Unhandled bot status event type: {event_type}")
+            logger.warning(f"Unhandled bot status event type: {event_type}")
 
     except Exception as e:
-        print(f"Error processing bot status webhook: {e}")
+        logger.exception(f"Error processing bot status webhook: {e}")
 
     return {"status": "ok"}
 
 
 @router.post("/api/webhook/recall")
 async def recall_webhook(request: Request):
-    print("Received REALTIME webhook from Recall.ai")
+    logger.info("Received REALTIME webhook from Recall.ai")
     try:
         payload = await request.json()
-        print("Realtime Payload:", payload)
+        logger.debug(f"Realtime Payload: {payload}")
 
         event_type = payload.get("event")
         data = payload.get("data", {})
@@ -195,28 +201,28 @@ async def recall_webhook(request: Request):
         bot_id = bot_info.get("id")
 
         if current_bot_id is None:
-            print("No current bot set; ignoring realtime event")
+            logger.debug("No current bot set; ignoring realtime event")
             return {"status": "ok"}
 
         if current_bot_id and bot_id != current_bot_id:
-            print(f"Ignoring realtime event for non-current bot {bot_id}")
+            logger.debug(f"Ignoring realtime event for non-current bot {bot_id}")
             return {"status": "ok"}
 
         if event_type == "transcript.data":
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
-            print(f"Transcribed text from {speaker}: {spoken_text}")
+            logger.info(f"Transcribed text from {speaker}: {spoken_text}")
             transcript_writer.save_line(bot_id, speaker, spoken_text)
 
             if "scooby" in spoken_text.lower():
-                print(f"Scooby mentioned by {speaker}: {spoken_text}")
+                logger.info(f"Scooby mentioned by {speaker}: {spoken_text}")
                 try:
-                    print(f"Sending to Gemini: {spoken_text}")
+                    logger.debug(f"Sending to Gemini: {spoken_text}")
                     await model.connect_to_gemini(text=spoken_text)
-                    print("Sent to Gemini successfully")
+                    logger.debug("Sent to Gemini successfully")
                 except Exception as e:
-                    print(f"Error sending to Gemini: {e}")
+                    logger.exception(f"Error sending to Gemini: {e}")
 
             else:
                 model.chat_history.append(
@@ -233,7 +239,7 @@ async def recall_webhook(request: Request):
                     model.participants = list(participants_manager.list)
                 except Exception:
                     pass
-                print(f"Total participants: {len(participants_manager.list)}")
+                logger.info(f"Total participants: {len(participants_manager.list)}")
                 bot_context.print_active_bot()
                 transcript_writer.save_line(
                     bot_id,
@@ -254,7 +260,7 @@ async def recall_webhook(request: Request):
                     pass
                 p = participants_manager.get(participant_id)
                 if p:
-                    print(f"Participant left: {p['name']}")
+                    logger.info(f"Participant left: {p['name']}")
             transcript_writer.save_line(
                 bot_id,
                 "INFO : PARTICIPANT",
@@ -263,9 +269,9 @@ async def recall_webhook(request: Request):
             bot_context.print_active_bot()
 
         else:
-            print(f"Unhandled realtime event: {event_type}")
+            logger.warning(f"Unhandled realtime event: {event_type}")
 
     except Exception as e:
-        print(f"Error processing realtime webhook: {e}")
+        logger.exception(f"Error processing realtime webhook: {e}")
 
     return {"status": "ok"}

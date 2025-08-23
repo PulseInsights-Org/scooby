@@ -1,5 +1,8 @@
 from pinecone import Pinecone
 from typing import Dict, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class PineconeStore():
     def __init__(self, api_key, index_name="main-events-index"):
@@ -17,7 +20,7 @@ class PineconeStore():
                     "field_map": {"text": "text"}
                 }
             )
-            print(f"Created index: {self.index_name}")
+            logger.info(f"Created index: {self.index_name}")
             
         self.index = self.pc.Index(self.index_name)
     

@@ -1,5 +1,8 @@
 import os
 from typing import Callable
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptWriter:
@@ -38,7 +41,7 @@ class TranscriptWriter:
             with open(file_path, "a", encoding="utf-8") as f:
                 f.write(f"{speaker}: {text}\n")
         except Exception as e:
-            print(f"Error saving transcript: {e}")
+            logger.exception(f"Error saving transcript: {e}")
 
 
 class BotContext:
@@ -86,6 +89,6 @@ class BotContext:
 
     def print_active_bot(self) -> None:
         try:
-            print(f"Current active bot: {self.bot_id}")
+            logger.info(f"Current active bot: {self.bot_id}")
         except Exception as e:
-            print(f"Error printing active bots: {e}")
+            logger.exception(f"Error printing active bots: {e}")

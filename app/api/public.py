@@ -26,4 +26,8 @@ async def add_scooby_bot(body : MeetingRequest, request: Request):
     meeting_url = body.meeting_url
     is_transcript = body.isTranscript
     bot_id = await add_bot(meeting_url, is_transcript)
+    if not bot_id:
+        return {
+            "message": "Scooby Bot already exists, Please remove and try again"
+        }
     return {"bot_id": bot_id}
