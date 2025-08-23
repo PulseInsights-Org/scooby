@@ -138,9 +138,10 @@ async def add_scooby_bot(request: MeetingRequest):
     global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
     
     if current_bot_id is not None:
-        return {
-            "message" : "Scooby Bot already exists, Please remove and try again"
-        }
+        raise HTTPException(
+            status_code=409,
+            detail="Scooby Bot already exists, Please remove and try again"
+        )
     
     meeting_url = request.meeting_url
     is_transcript = request.saveTranscript or request.isTranscript
