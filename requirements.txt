@@ -2,8 +2,3 @@ google-genai
 httpx
 fastapi
 uvicorn
-python-dotenv
-pinecone
-neo4j
-jinja2
-python-multipart
