@@ -26,7 +26,7 @@ class RecallBot():
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://082aaee79ab3.ngrok-free.app/api/webhook/recall",
+                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
@@ -44,7 +44,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://082aaee79ab3.ngrok-free.app/"
+                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/"
                     }
                 }
             },
@@ -168,4 +168,6 @@ class RecallBot():
             raise HTTPException(status_code=408, detail="Request timeout")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    
+    
     

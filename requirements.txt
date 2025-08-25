@@ -1,5 +1,11 @@
+aiofiles
+fastapi
 google-genai
 httpx
-fastapi
-uvicorn
+Jinja2
+neo4j
+pinecone
+pydantic
+python-dotenv
+uvicorn[standard]
 python-dotenv

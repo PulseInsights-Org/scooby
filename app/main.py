@@ -38,6 +38,3 @@ app.add_middleware(
 # include all API routes
 app.include_router(public_router)
 app.include_router(recall_router)
-
-
-

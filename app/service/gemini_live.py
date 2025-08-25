@@ -207,11 +207,9 @@ class GeminiLive():
                                     data = await self.tool_executor.send_chat_message_tool(self.bot_id, message, to, pin)
                                 
                                 elif function_name == "get_current_participants":
-                                    # return only active participants
                                     data = [p for p in (self.participants or []) if p.get("status") == "joined"]
                                 
                                 elif function_name == "get_all_joined_participants":
-                                    # return the whole tracked list
                                     data = self.participants or []
                                 
                                 else:
