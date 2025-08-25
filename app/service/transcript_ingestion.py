@@ -101,7 +101,7 @@ class TranscriptIngestion:
 
     async def ingest_transcript(self, x_org_name: str, transcript_filepath: str) -> Dict:
         self.org_name = x_org_name
-        logger.info("[ingest_transcript] Start ingest for tenant_id=%s org_id=%s file=%s", x_org_name, transcript_filepath)
+        logger.info("[ingest_transcript] Start ingest for org_name=%s file=%s", x_org_name, transcript_filepath)
         init_res = await self.init_intake()
         logger.info("[ingest_transcript] init_intake result=%s", init_res)
         
@@ -146,46 +146,43 @@ class TranscriptIngestion:
 #     # Ensure logs are visible when running this file directly
 #     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
-#     ORG_ID = "832697dd-a913-405d-907a-a0c177d0746f"
-#     TENANT_ID = "3do64"
+#     ORG_ID = "pulse-dev"
 #     BASE_URL = "https://dev.pulse-api.getpulseinsights.ai"
 
 #     # Use the provided transcript file directly for testing
-#     TRANSCRIPT_PATH = r"c:\\Users\\91948\\Desktop\\scooby\\app\\transcripts\\Meeting_C.txt"
+#     TRANSCRIPT_PATH = r"C:\\Users\\91948\\Desktop\\Invoices\\scooby\\app\\transcripts\\Scooby_pulse-dev-2_5878.txt"
 
-#     ti = TranscriptIngestion(org_id=ORG_ID, base_url=BASE_URL, timeout=30.0)
+#     ti = TranscriptIngestion(org_name=ORG_ID, base_url=BASE_URL, timeout=30.0)
 
 #     async def _run():
 #         # Step-by-step tests commented out to test full pipeline instead
 #         # print("-- init_intake --")
 #         # init_res = await ti.init_intake()
 #         # print(init_res)
-#         # if not init_res.get("success"):
-#         #     return
-#         # data = init_res.get("data") or {}
-#         # intake_id = data.get("intake_id") or data.get("id") or data.get("intakeId")
-#         # print("intake_id:", intake_id)
-#         # if not intake_id:
-#         #     return
-#         # if TRANSCRIPT_PATH and os.path.exists(TRANSCRIPT_PATH):
-#         #     print("-- upload_file --", TRANSCRIPT_PATH)
-#         #     up_res = await ti.upload_file(intake_id, TRANSCRIPT_PATH)
-#         #     print(up_res)
-#         # else:
-#         #     print(f"Transcript file not found at: {TRANSCRIPT_PATH}; skipping upload_file")
-#         # print("-- get_intake_status --")
-#         # st_res = await ti.get_intake_status(intake_id)
-#         # print(st_res)
-#         # print("-- finalize_intake --")
-#         # fin_res = await ti.finalize_intake(intake_id)
-#         # print(fin_res)
 
-#         # Full pipeline test
-#         # print("-- ingest_transcript (pipeline) --")
-#         # if not (TRANSCRIPT_PATH and os.path.exists(TRANSCRIPT_PATH)):
-#         #     print(f"Transcript file not found at: {TRANSCRIPT_PATH}")
-#         #     return
-#         # pipeline_res = await ti.ingest_transcript(ORG_ID, TENANT_ID, TRANSCRIPT_PATH)
-#         # print(pipeline_res)
+#         # if init_res.get("success"):
+#         #     data = init_res.get("data") or {}
+#         #     intake_id = data.get("intake_id") or data.get("id") or data.get("intakeId")
+#         #     if intake_id:
+#         #         if TRANSCRIPT_PATH and os.path.exists(TRANSCRIPT_PATH):
+#         #             print("-- upload_file --", TRANSCRIPT_PATH)
+#         #             up_res = await ti.upload_file(intake_id, TRANSCRIPT_PATH)
+#         #             print(up_res)
+#         #         else:
+#         #             print(f"Transcript file not found at: {TRANSCRIPT_PATH}; skipping upload_file")
+#         #         print("-- get_intake_status --")
+#         #         st_res = await ti.get_intake_status(intake_id)
+#         #         print(st_res)
+#         #         print("-- finalize_intake --")
+#         #         fin_res = await ti.finalize_intake(intake_id)
+#         #         print(fin_res)
+
+#         #         # Full pipeline test
+#         #         print("-- ingest_transcript (pipeline) --")
+#         #         if os.path.exists(TRANSCRIPT_PATH):
+#         #             pipeline_res = await ti.ingest_transcript(ORG_ID, TRANSCRIPT_PATH)
+#         #             print(pipeline_res)
+#         #         else:
+#         #             print(f"Transcript file not found at: {TRANSCRIPT_PATH}")
 
 #     # asyncio.run(_run())

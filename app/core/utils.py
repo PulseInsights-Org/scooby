@@ -109,17 +109,19 @@ class BotContext:
         transcripts_dir: str,
         meeting_url: str | None,
         ti,  # TranscriptIngestion instance
-        x_org_id: str,
-        tenant_id: str,
+        x_org_name: str,
+        transcript_writer,  # TranscriptWriter instance
         logger: logging.Logger,
     ) -> None:
         try:
             if not transcripts_enabled:
                 return
-            # Build transcript file path
-            safe_bot = BotContext.safe_name(bot_id)
-            safe_meeting = BotContext.safe_name(meeting_url or "meeting")
-            transcript_path = os.path.join(transcripts_dir, f"{safe_bot}_{safe_meeting}.txt")
+            # Build transcript file path to match TranscriptWriter.save_line naming
+            # => "Scooby_{org_name}_{writer.id}.txt"
+            transcript_path = os.path.join(
+                transcripts_dir,
+                f"Scooby_{x_org_name}_{getattr(transcript_writer, 'id', 'unknown')}.txt",
+            )
 
             # Ensure only one ingestion per bot
             async with BotContext._transcript_ingestion_lock:
@@ -133,7 +135,7 @@ class BotContext:
                 return
 
             logger.info("Starting transcript ingestion for %s", transcript_path)
-            res = await ti.ingest_transcript(x_org_id, tenant_id, transcript_path)
+            res = await ti.ingest_transcript(x_org_name, transcript_path)
             logger.info("Transcript ingestion result: %s", res)
 
             if res and res.get("success"):

@@ -136,15 +136,60 @@ async def recall_bot_status_webhook(request: Request):
     try:
         payload = await request.json()
         logger.debug(f"Bot Status Payload: {payload}")
-        event_type = payload.get("type")
-        data = payload.get("data", {})
+        # Some Recall deliveries may set `event` instead of `type`
+        event_type = (payload.get("type") or payload.get("event") or "").strip() or None
+        data = payload.get("data", {}) or {}
+        if not event_type:
+            # Log full payload at INFO to aid debugging when schema varies
+            logger.info(f"Bot Status Payload (no event/type): {payload}")
 
-        if event_type == "bot.status_change":
-            bot_id = data.get("id")
-            status = data.get("status")
-            sub_code = data.get("sub_code")
+        # Accept common variants and explicit bot.* events
+        normalized_event = (event_type or "").lower() if event_type else None
+        is_status_event = normalized_event in {"bot.status_change", "status_change", "bot.status"} or ("status" in data or "status" in payload)
+
+        # Map explicit bot.* events to a synthetic status when Recall sends them
+        mapped_status = None
+        if normalized_event and normalized_event.startswith("bot."):
+            status_map = {
+                "bot.joining_call": "joining_call",
+                "bot.in_call": "in_call",
+                "bot.in_call_not_recording": "in_call",
+                "bot.in_call_recording": "in_call_recording",
+                "bot.call_ended": "call_ended",
+                "bot.done": "done",
+                "bot.fatal": "fatal",
+            }
+            mapped_status = status_map.get(normalized_event)
+            if mapped_status:
+                is_status_event = True
+
+        if is_status_event:
+            # Extract fields from multiple possible locations
+            inner_data = (data.get("data", {}) or {})
+            bot_id = (
+                (data.get("bot", {}) or {}).get("id")
+                or inner_data.get("bot_id")
+                or (inner_data.get("bot", {}) or {}).get("id")
+                or data.get("bot_id")
+                or data.get("id")
+                or (payload.get("bot", {}) or {}).get("id")
+                or payload.get("id")
+            )
+            status = (
+                mapped_status
+                or data.get("status")
+                or (payload.get("bot", {}) or {}).get("status")
+                or payload.get("status")
+            )
+            sub_code = data.get("sub_code") or payload.get("sub_code")
 
             logger.info(f"Bot {bot_id} status changed to: {status}")
+            if bot_id is None:
+                logger.debug(f"Bot Status Payload (missing bot_id): {payload}")
+                # Single active bot model: fallback to current_bot_id to avoid missing cleanup
+                if current_bot_id:
+                    bot_id = current_bot_id
+                    logger.debug(f"Falling back to current_bot_id for status handling: {bot_id}")
             if sub_code:
                 logger.info(f"Sub code: {sub_code}")
 
@@ -171,6 +216,7 @@ async def recall_bot_status_webhook(request: Request):
                         meeting_url=current_meeting_url,
                         ti=ti,
                         x_org_name=current_x_org_name,
+                        transcript_writer=transcript_writer,
                         logger=logger,
                     )
                     participants_manager.reset()
@@ -198,6 +244,7 @@ async def recall_bot_status_webhook(request: Request):
                         meeting_url=current_meeting_url,
                         ti=ti,
                         x_org_name=current_x_org_name,
+                        transcript_writer=transcript_writer,
                         logger=logger,
                     )
                     participants_manager.reset()
@@ -226,6 +273,7 @@ async def recall_bot_status_webhook(request: Request):
                         meeting_url=current_meeting_url,
                         ti=ti,
                         x_org_name=current_x_org_name,
+                        transcript_writer=transcript_writer,
                         logger=logger,
                     )
                     participants_manager.reset()
