@@ -19,30 +19,40 @@ rb = RecallBot()
 participants_manager = ParticipantsManager()
 bot_context = BotContext()
 
-model = GeminiLive(connection_manager=cm)
-
 current_bot_id = None
 current_meeting_url = None
 transcripts_enabled = False
-current_x_org_id = None
-current_tenant_id = None
+current_x_org_name = None
+processed_audio_segments = set()
 
 transcript_writer = TranscriptWriter(
     enabled_getter=lambda: transcripts_enabled,
     transcripts_dir=TRANSCRIPTS_DIR,
     meeting_url_getter=lambda: current_meeting_url,
+    org_name=None
 )
 
-# Transcript ingestion client instance used during bot end states
-ti = TranscriptIngestion(org_id="")
+ti = TranscriptIngestion(org_name="")
+
+model = GeminiLive(connection_manager=cm, transcript_writer=transcript_writer)
+
+def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
+    """Simple check if this exact audio segment was already processed"""
+    segment_key = f"{start_time}:{end_time}:{speaker}"
+    
+    if segment_key in processed_audio_segments:
+        print(f"Duplicate audio segment detected: {start_time}s to {end_time}s from {speaker}")
+        return True
+        
+    processed_audio_segments.add(segment_key)
+    return False
 
 def _set_inactive():
-    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
+    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name   
     current_bot_id = None
     current_meeting_url = None
     transcripts_enabled = False
-    current_x_org_id = None
-    current_tenant_id = None
+    current_x_org_name = None
     try:
         bot_context.clear()
         BotContext.remove_model_context(model)
@@ -60,9 +70,10 @@ inactivity_monitor = InactivityMonitor(
     on_cleared=lambda: (_set_inactive(), bot_context.print_active_bot()),
 )
 
-async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_id: str, tenant_id: str) -> str | None:
+async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: str) -> str | None:
     """Create a Recall bot and update local module state."""
-    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
+    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name
+    
     # Enforce single active bot at a time
     if current_bot_id is not None:
         # A bot is already active; do not create another
@@ -72,8 +83,8 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_id: st
         current_bot_id = bot_id
         current_meeting_url = meeting_url
         transcripts_enabled = is_transcript
-        current_x_org_id = x_org_id
-        current_tenant_id = tenant_id
+        current_x_org_name = x_org_name
+        transcript_writer.org_name = current_x_org_name
         try:
             bot_context.bot_id = bot_id
             bot_context.meeting_url = meeting_url
@@ -143,19 +154,15 @@ async def recall_bot_status_webhook(request: Request):
 
             if status == "joining_call":
                 logger.info(f"Bot {bot_id} is joining the meeting")
-                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] is joining the meeting")
 
             elif status == "in_call":
                 logger.info(f"Bot {bot_id} successfully joined the meeting")
-                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] joined the meeting")
 
             elif status == "in_call_recording":
                 logger.info(f"Bot {bot_id} is now recording")
-                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] started recording")
 
             elif status == "call_ended":
                 logger.info(f"Bot {bot_id} call ended")
-                transcript_writer.save_line(bot_id, "BOT_STATUS", "Call ended")
                 try:
                     await BotContext.ingest_and_cleanup_transcript(
                         bot_id,
@@ -163,8 +170,7 @@ async def recall_bot_status_webhook(request: Request):
                         transcripts_dir=TRANSCRIPTS_DIR,
                         meeting_url=current_meeting_url,
                         ti=ti,
-                        x_org_id=current_x_org_id,
-                        tenant_id=current_tenant_id,
+                        x_org_name=current_x_org_name,
                         logger=logger,
                     )
                     participants_manager.reset()
@@ -184,7 +190,6 @@ async def recall_bot_status_webhook(request: Request):
 
             elif status == "done":
                 logger.info(f"Bot {bot_id} finished successfully")
-                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot [id : {bot_id}] finished successfully")
                 try:
                     await BotContext.ingest_and_cleanup_transcript(
                         bot_id,
@@ -192,8 +197,7 @@ async def recall_bot_status_webhook(request: Request):
                         transcripts_dir=TRANSCRIPTS_DIR,
                         meeting_url=current_meeting_url,
                         ti=ti,
-                        x_org_id=current_x_org_id,
-                        tenant_id=current_tenant_id,
+                        x_org_name=current_x_org_name,
                         logger=logger,
                     )
                     participants_manager.reset()
@@ -214,7 +218,6 @@ async def recall_bot_status_webhook(request: Request):
                 logger.error(f"Bot {bot_id} encountered a fatal error")
                 if sub_code:
                     logger.error(f"Fatal error reason: {sub_code}")
-                transcript_writer.save_line(bot_id, "BOT_STATUS", f"Bot fatal error: {sub_code or 'unknown reason'}")
                 try:
                     await BotContext.ingest_and_cleanup_transcript(
                         bot_id,
@@ -222,8 +225,7 @@ async def recall_bot_status_webhook(request: Request):
                         transcripts_dir=TRANSCRIPTS_DIR,
                         meeting_url=current_meeting_url,
                         ti=ti,
-                        x_org_id=current_x_org_id,
-                        tenant_id=current_tenant_id,
+                        x_org_name=current_x_org_name,
                         logger=logger,
                     )
                     participants_manager.reset()
@@ -278,9 +280,19 @@ async def recall_webhook(request: Request):
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
+            
+            start_time = words[0]["start_timestamp"]["relative"]
+            end_time = words[-1]["end_timestamp"]["relative"]
+        
+            print(f"Processing audio segment: {start_time}s to {end_time}s from {speaker}")
+            
+            if _is_duplicate_audio_segment(start_time, end_time, speaker):
+                print(f"Skipping duplicate audio segment from {speaker}")
+                return {"status": "ok"}
+            
             logger.info(f"Transcribed text from {speaker}: {spoken_text}")
-            transcript_writer.save_line(bot_id, speaker, spoken_text)
-
+            transcript_writer.save_line(speaker, spoken_text)
+            
             if "scooby" in spoken_text.lower():
                 logger.info(f"Scooby mentioned by {speaker}: {spoken_text}")
                 try:
@@ -308,11 +320,6 @@ async def recall_webhook(request: Request):
                     pass
                 logger.info(f"Total participants: {len(participants_manager.list)}")
                 bot_context.print_active_bot()
-                transcript_writer.save_line(
-                    bot_id,
-                    "INFO : PARTICIPANT",
-                    f"JOINED : {participant_data.get('name')} ({participant_data.get('id')})"
-                )
 
         elif event_type == "participant_events.leave":
             inactivity_monitor.record_activity()
@@ -329,11 +336,6 @@ async def recall_webhook(request: Request):
                 p = participants_manager.get(participant_id)
                 if p:
                     logger.info(f"Participant left: {p['name']}")
-            transcript_writer.save_line(
-                bot_id,
-                "INFO : PARTICIPANT",
-                f"LEFT: {participant_name} ({participant_id})"
-            )
             bot_context.print_active_bot()
 
         else:

@@ -3,6 +3,7 @@ from typing import Callable, Optional, Awaitable
 import logging
 import asyncio
 from datetime import datetime, timezone
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -22,24 +23,25 @@ class TranscriptWriter:
         enabled_getter: Callable[[], bool],
         transcripts_dir: str,
         meeting_url_getter: Callable[[], str | None],
+        org_name = None
     ):
         self._enabled_getter = enabled_getter
         self._dir = transcripts_dir
         self._meeting_url_getter = meeting_url_getter
+        self.org_name = org_name
+        self.id = str(uuid.uuid4())[:4]
         try:
             os.makedirs(self._dir, exist_ok=True)
         except Exception:
             pass
 
-    def save_line(self, bot_id: str, speaker: str, text: str) -> None:
+    def save_line(self, speaker: str, text: str) -> None:
         try:
             if not self._enabled_getter():
                 return
             if not os.path.exists(self._dir):
                 os.makedirs(self._dir, exist_ok=True)
-            safe_bot = BotContext.safe_name(bot_id)
-            safe_meeting = BotContext.safe_name(self._meeting_url_getter() or "meeting")
-            file_path = os.path.join(self._dir, f"{safe_bot}_{safe_meeting}.txt")
+            file_path = os.path.join(self._dir, f"Scooby_{self.org_name}_{self.id}.txt")
             with open(file_path, "a", encoding="utf-8") as f:
                 f.write(f"{speaker}: {text}\n")
         except Exception as e:

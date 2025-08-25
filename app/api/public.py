@@ -14,8 +14,7 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
-    x_org_id: str
-    tenant_id: str
+    x_org_name: str
     saveTranscript: bool = True
 
 
@@ -28,7 +27,7 @@ async def bot_html(request: Request):
 async def add_scooby_bot(body : MeetingRequest, request: Request):
     meeting_url = body.meeting_url
     is_transcript = body.saveTranscript or body.isTranscript
-    bot_id = await add_bot(meeting_url, is_transcript, x_org_id=body.x_org_id, tenant_id=body.tenant_id)
+    bot_id = await add_bot(meeting_url, is_transcript, x_org_name=body.x_org_name)
     if not bot_id:
         return {
             "message": "Scooby Bot already exists, Please remove and try again"

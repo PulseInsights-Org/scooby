@@ -8,15 +8,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TranscriptIngestion:
-    def __init__(self, org_id: str, base_url: str = "https://dev.pulse-api.getpulseinsights.ai", timeout: float = 30.0):
-        self.org_id = org_id
+    def __init__(self, org_name: str, base_url: str = "https://dev.pulse-api.getpulseinsights.ai", timeout: float = 30.0):
+        self.org_name = org_name
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         logger.debug("TranscriptIngestion initialized")
 
     async def init_intake(self) -> Dict:
         url = f"{self.base_url}/api/intakes/init"
-        headers = {"x-org-id": self.org_id, "x-idempotency-key": str(uuid.uuid4())}
+        headers = {"x-org-name": self.org_name, "x-idempotency-key": str(uuid.uuid4())}
         try:
             logger.info("[init_intake] POST %s", url)
             logger.debug("[init_intake] headers=%s", headers)
@@ -35,7 +35,7 @@ class TranscriptIngestion:
 
     async def upload_file(self, intake_id: Union[str, int], file_path: str) -> Dict:
         url = f"{self.base_url}/api/upload/file/{intake_id}"
-        headers = {"x-org-id": self.org_id}
+        headers = {"x-org-name": self.org_name}
         try:
             filename = os.path.basename(file_path)
             file_size = None
@@ -63,7 +63,7 @@ class TranscriptIngestion:
 
     async def get_intake_status(self, intake_id: Union[str, int]) -> Dict:
         url = f"{self.base_url}/api/intakes/{intake_id}"
-        headers = {"x-org-id": self.org_id}
+        headers = {"x-org-name": self.org_name}
         try:
             logger.info("[get_intake_status] GET %s", url)
             logger.debug("[get_intake_status] headers=%s", headers)
@@ -82,7 +82,7 @@ class TranscriptIngestion:
 
     async def finalize_intake(self, intake_id: Union[str, int]) -> Dict:
         url = f"{self.base_url}/api/intakes/{intake_id}/finalize"
-        headers = {"x-org-id": self.org_id}
+        headers = {"x-org-name": self.org_name}
         try:
             logger.info("[finalize_intake] POST %s", url)
             logger.debug("[finalize_intake] headers=%s", headers)
@@ -99,9 +99,9 @@ class TranscriptIngestion:
             logger.exception("[finalize_intake] Exception: %s", e)
             return {"success": False, "message": str(e)}
 
-    async def ingest_transcript(self, x_org_id: str, tenant_id: str, transcript_filepath: str) -> Dict:
-        self.org_id = x_org_id
-        logger.info("[ingest_transcript] Start ingest for tenant_id=%s org_id=%s file=%s", tenant_id, x_org_id, transcript_filepath)
+    async def ingest_transcript(self, x_org_name: str, transcript_filepath: str) -> Dict:
+        self.org_name = x_org_name
+        logger.info("[ingest_transcript] Start ingest for tenant_id=%s org_id=%s file=%s", x_org_name, transcript_filepath)
         init_res = await self.init_intake()
         logger.info("[ingest_transcript] init_intake result=%s", init_res)
         
@@ -134,7 +134,6 @@ class TranscriptIngestion:
             "upload": upload_res,
             "status": status_res,
             "finalize": finalize_res,
-            "tenant_id": tenant_id,
         }
 
 

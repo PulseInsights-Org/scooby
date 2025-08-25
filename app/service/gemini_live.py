@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class GeminiLive():
     
-    def __init__(self, api_key = "AIzaSyBUjH-PkLSZzyDxFXeTlTw9s8PaZq2nNPc", connection_manager: ConnectionManager = None):
+    def __init__(self, api_key = "AIzaSyBUjH-PkLSZzyDxFXeTlTw9s8PaZq2nNPc", connection_manager: ConnectionManager = None, transcript_writer = None):
         self.client = genai.Client(api_key=api_key)
         self.model = "gemini-live-2.5-flash-preview"
         self.tools = []
@@ -31,6 +31,7 @@ class GeminiLive():
         self.current_transcription = ""
         self.bot_id = None
         self.participants = []
+        self.tw = transcript_writer
     
     async def _async_enumerate(self, aiterable):
         n = 0
@@ -262,6 +263,7 @@ class GeminiLive():
                     if self.current_transcription and self.current_transcription.strip():
                         final_text = self.current_transcription.strip()
                         logger.info(f"[Scooby]: {final_text}")
+                        self.tw.save_line(speaker="Scooby", text=final_text)
                         self.conversation_history.append({
                             "role": "model",
                             "content": final_text,
