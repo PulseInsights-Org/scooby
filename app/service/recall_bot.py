@@ -1,5 +1,6 @@
 import httpx
 from fastapi import HTTPException
+import os
 
 
 # 1. Effective error handling
@@ -14,7 +15,9 @@ class RecallBot():
     async def add_bots(self, meeting_url : str, bot_name : str = "scooby"):
     
         recall_api_url = "https://us-west-2.recall.ai/api/v1/bot/"
-        recall_api_key = "8487c64e0ef42223efb24178c870d178c2c494f5"
+        recall_api_key = os.getenv("RECALL_API_KEY")
+        if not recall_api_key:
+            raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
         
         payload = {
             "meeting_url": meeting_url,
@@ -84,22 +87,53 @@ class RecallBot():
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     
+    async def handle_bot_removal(self, bot_id: str) -> dict:
+
+        recall_api_url = f"https://us-west-2.recall.ai/api/v1/bot/{bot_id}/leave_call/"
+        recall_api_key = os.getenv("RECALL_API_KEY")
+        if not recall_api_key:
+            raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
+
+        headers = {
+            "Authorization": recall_api_key,
+            "accept": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    recall_api_url,
+                    headers=headers,
+                    timeout=30.0,
+                )
+
+                if response.status_code in [200, 201]:
+                    try:
+                        return response.json()
+                    except ValueError:
+                        # No JSON body returned
+                        return {
+                            "success": True,
+                            "message": f"Successfully removed bot {bot_id} from meeting",
+                            "bot_id": bot_id,
+                        }
+                else:
+                    error_detail = response.text
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Failed to remove bot {bot_id} from meeting: {error_detail}",
+                    )
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=408, detail="Request timeout")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    
     async def send_chat_message(self, bot_id: str, message: str, to: str = "everyone", pin: bool = False) -> dict:
-        """Send a chat message to a meeting via Recall bot.
-        Mirrors the style and error handling of add_bots().
-
-        Args:
-            bot_id: The Recall bot ID.
-            message: The message text to send.
-            to: Recipient scope (e.g., "everyone").
-            pin: Whether to pin the message in the meeting UI.
-
-        Returns:
-            Parsed JSON response from Recall API on success.
-        """
         
         recall_api_url = f"https://us-west-2.recall.ai/api/v1/bot/{bot_id}/send_chat_message/"
-        recall_api_key = "8487c64e0ef42223efb24178c870d178c2c494f5"
+        recall_api_key = os.getenv("RECALL_API_KEY")
+        if not recall_api_key:
+            raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
 
         payload = {
             "to": to,
@@ -135,5 +169,3 @@ class RecallBot():
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     
-    def handle_bot_removal(self):
-        pass

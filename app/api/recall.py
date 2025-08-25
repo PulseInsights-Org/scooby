@@ -5,7 +5,7 @@ from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
 from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
-from app.core.utils import TranscriptWriter, BotContext
+from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
 from app.service.transcript_ingestion import TranscriptIngestion
 
 router = APIRouter()
@@ -49,6 +49,17 @@ def _set_inactive():
     except Exception:
         pass
 
+# Inactivity monitor instance
+inactivity_monitor = InactivityMonitor(
+    get_current_bot_id=lambda: current_bot_id,
+    participants_manager=participants_manager,
+    model=model,
+    transcript_writer=transcript_writer,
+    bot_name="scooby",
+    remove_bot=rb.handle_bot_removal,
+    on_cleared=lambda: (_set_inactive(), bot_context.print_active_bot()),
+)
+
 async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_id: str, tenant_id: str) -> str | None:
     """Create a Recall bot and update local module state."""
     global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_id, current_tenant_id
@@ -79,6 +90,8 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_id: st
         except Exception:
             pass
         bot_context.print_active_bot()
+        # Initialize inactivity tracking and start watcher
+        inactivity_monitor.start(bot_id)
     return bot_id
 
 
@@ -159,6 +172,11 @@ async def recall_bot_status_webhook(request: Request):
                         model.participants = []
                     except Exception:
                         pass
+                    # stop inactivity monitor
+                    try:
+                        inactivity_monitor.stop()
+                    except Exception:
+                        pass
                     _set_inactive()
                 except Exception:
                     logger.exception("Error while handling call_ended cleanup")
@@ -184,6 +202,10 @@ async def recall_bot_status_webhook(request: Request):
                     except Exception:
                         pass
                     _set_inactive()
+                    try:
+                        inactivity_monitor.stop()
+                    except Exception:
+                        pass
                 except Exception:
                     logger.exception("Error while handling done cleanup")
                 bot_context.print_active_bot()
@@ -210,6 +232,10 @@ async def recall_bot_status_webhook(request: Request):
                     except Exception:
                         pass
                     _set_inactive()
+                    try:
+                        inactivity_monitor.stop()
+                    except Exception:
+                        pass
                 except Exception:
                     logger.exception("Error while handling fatal cleanup")
                 bot_context.print_active_bot()
@@ -247,6 +273,8 @@ async def recall_webhook(request: Request):
             return {"status": "ok"}
 
         if event_type == "transcript.data":
+            inactivity_monitor.record_activity()
+            inactivity_monitor.record_transcript()
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
@@ -268,6 +296,7 @@ async def recall_webhook(request: Request):
                 )
 
         elif event_type == "participant_events.join":
+            inactivity_monitor.record_activity()
             participant_data = payload["data"]["data"]["participant"]
             action = payload["data"]["data"]["action"]
 
@@ -286,6 +315,7 @@ async def recall_webhook(request: Request):
                 )
 
         elif event_type == "participant_events.leave":
+            inactivity_monitor.record_activity()
             participant_data = payload["data"]["data"]["participant"]
             participant_id = participant_data["id"]
             participant_name = participant_data["name"]

@@ -3,11 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 import logging
+from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 # routers
 from app.api.public import router as public_router
 from app.api.recall import router as recall_router
+
+load_dotenv()  # Load environment variables from .env if present
 
 app = FastAPI()
 
