@@ -5,10 +5,14 @@ from app.core.tools import GeminiTools
 from google.genai.types import FunctionDeclaration
 from google.genai import types 
 from app.core.scooby_prompt import prompt
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class GeminiLive():
     
-    def __init__(self, api_key = "AIzaSyBUjH-PkLSZzyDxFXeTlTw9s8PaZq2nNPc", connection_manager: ConnectionManager = None):
+    def __init__(self, api_key = "AIzaSyBUjH-PkLSZzyDxFXeTlTw9s8PaZq2nNPc", connection_manager: ConnectionManager = None, transcript_writer = None):
         self.client = genai.Client(api_key=api_key)
         self.model = "gemini-live-2.5-flash-preview"
         self.tools = []
@@ -27,6 +31,7 @@ class GeminiLive():
         self.current_transcription = ""
         self.bot_id = None
         self.participants = []
+        self.tw = transcript_writer
     
     async def _async_enumerate(self, aiterable):
         n = 0
@@ -165,11 +170,11 @@ class GeminiLive():
                         try:
                             encoded = base64.b64encode(response.data).decode("ascii")
                         except Exception as encode_err:
-                            print(f"Error base64-encoding audio chunk: {encode_err}")
+                            logger.exception(f"Error base64-encoding audio chunk: {encode_err}")
                             encoded = None
                             
                         if encoded:
-                            print("sending audio")
+                            logger.debug("sending audio")
                             await self.connection_manager.send_to_all({
                                 "type": "audio",
                                 "data": encoded,
@@ -182,7 +187,7 @@ class GeminiLive():
                             
                             function_name = fc.name
                             function_args = fc.args
-                            print("function called by gemini", function_name)
+                            logger.info(f"function called by gemini: {function_name}")
                             
                             try:
                                 if function_name == "connections_retrieval_tool":
@@ -210,7 +215,7 @@ class GeminiLive():
                                 else:
                                     data = {"error": f"Unknown function: {function_name}"}
                                 
-                                print(data)
+                                logger.debug(f"Function result for {function_name}: {data}")
                                     
                                 function_response = types.FunctionResponse(
                                     id=fc.id,
@@ -221,8 +226,7 @@ class GeminiLive():
                                 function_responses.append(function_response)
                             
                             except Exception as tool_error:
-                                
-                                print(f"Error executing tool {function_name}: {tool_error}")
+                                logger.exception(f"Error executing tool {function_name}: {tool_error}")
                                 error_response = types.FunctionResponse(
                                     id=fc.id,
                                     name=fc.name,
@@ -231,10 +235,10 @@ class GeminiLive():
                                 function_responses.append(error_response)
                         
                         if function_responses:
-                            print("sending gemini function response...")
+                            logger.debug("sending gemini function response...")
                             await connection.send_tool_response(function_responses=function_responses)
                     except Exception as e:
-                        print(f"Error processing tool calls: {e}")
+                        logger.exception(f"Error processing tool calls: {e}")
                         
                 if n == 0:
                     try:
@@ -243,11 +247,11 @@ class GeminiLive():
                             response.server_content.model_turn.parts and 
                             len(response.server_content.model_turn.parts) > 0 and
                             response.server_content.model_turn.parts[0].inline_data):
-                            print(response.server_content.model_turn.parts[0].inline_data.mime_type)
+                            logger.debug(response.server_content.model_turn.parts[0].inline_data.mime_type)
                         else:
-                            print("No inline data available in response")
+                            logger.debug("No inline data available in response")
                     except AttributeError as e:
-                        print(f"Error accessing response data: {e}")
+                        logger.exception(f"Error accessing response data: {e}")
             
             
                 turn_complete = bool(getattr(getattr(response, 'server_content', None), 'turn_complete', False))
@@ -256,7 +260,8 @@ class GeminiLive():
                     
                     if self.current_transcription and self.current_transcription.strip():
                         final_text = self.current_transcription.strip()
-                        print(f"[Scooby]: {final_text}")
+                        logger.info(f"[Scooby]: {final_text}")
+                        self.tw.save_line(speaker="Scooby", text=final_text)
                         self.conversation_history.append({
                             "role": "model",
                             "content": final_text,
@@ -274,7 +279,7 @@ class GeminiLive():
                     
             if self.current_transcription and self.current_transcription.strip():
                 final_text = self.current_transcription.strip()
-                print(f"[Scooby]: {final_text}")
+                logger.info(f"[Scooby]: {final_text}")
                 self.conversation_history.append({
                     "role": "model",
                     "content": final_text,

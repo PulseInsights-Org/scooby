@@ -96,6 +96,10 @@ function handleWebSocketMessage(data) {
                 payloadType: typeof data.data,
                 length: data.data ? data.data.length : 0
             });
+            // Show wave animation during audio playback
+            if (!isModelSpeaking) {
+                showWaveVisualization(true, 'listening');
+            }
             playAudio(data.data);
             break;
             
@@ -176,7 +180,6 @@ function playAudio(base64Data) {
             },
             (err) => {
                 console.timeEnd("decodeAudioData");
-                
                 console.error("❌ decodeAudioData error:", err);
                 console.timeEnd("playAudio_total");
                 console.groupEnd();
@@ -196,8 +199,14 @@ function scheduleAudioChunk(audioBuffer) {
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
+        
+        // Enhanced animation control during audio playback
         source.onended = () => {
             console.log("🔚 Source ended at", audioContext.currentTime.toFixed(3));
+            // Hide wave animation when audio chunk ends (if not still speaking)
+            if (!isModelSpeaking) {
+                showWaveVisualization(false);
+            }
         };
 
         const currentTime = audioContext.currentTime;
@@ -245,7 +254,7 @@ function createWAVHeaderAndBlob(pcmBytes, sampleRate = 24000) {
     writeString(12, 'fmt ');
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
+    view.setUint16(22, 1, true); // Fixed: should be 1 for mono
     view.setUint32(24, sampleRate, true);
     view.setUint32(28, byteRate, true);
     view.setUint16(32, blockAlign, true);
@@ -262,6 +271,50 @@ function createWAVHeaderAndBlob(pcmBytes, sampleRate = 24000) {
 function updateStatus(type) {
     console.log("🔔 updateStatus:", type);
     pulseCoreEl.className = `pulse-core ${type}`;
+    
+    // Add pulse animation for speaking state
+    if (type === 'speaking') {
+        addPulseAnimation();
+    } else {
+        removePulseAnimation();
+    }
+}
+
+function addPulseAnimation() {
+    // Create pulse animation effect for the core
+    if (!pulseCoreEl.classList.contains('pulse-animation')) {
+        pulseCoreEl.classList.add('pulse-animation');
+        // Add dynamic CSS for pulse effect
+        if (!document.getElementById('pulse-style')) {
+            const style = document.createElement('style');
+            style.id = 'pulse-style';
+            style.textContent = `
+                .pulse-core.pulse-animation {
+                    animation: pulseEffect 1s ease-in-out infinite;
+                }
+                
+                @keyframes pulseEffect {
+                    0% {
+                        transform: scale(1);
+                        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+                    }
+                    50% {
+                        transform: scale(1.1);
+                        box-shadow: 0 6px 25px rgba(255, 193, 7, 0.4);
+                    }
+                    100% {
+                        transform: scale(1);
+                        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    }
+}
+
+function removePulseAnimation() {
+    pulseCoreEl.classList.remove('pulse-animation');
 }
 
 function showWaveVisualization(show, type = 'listening') {
