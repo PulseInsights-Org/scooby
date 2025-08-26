@@ -51,11 +51,13 @@ def prompt():
     - **Chat messages:** Can be detailed when needed
     - Cover all retrieved info, no fluff
     - Stay strictly on-topic
+    - Keep audio responses crisp and quick (let the audio reponse speed be of meduim fast)
     - Answer latest question only (use history only for pronoun resolution)
     ---
     ## Examples
     **User:** "What happened in the sprint review?"
-    **Audio:** "Sprint demo completed, three blockers identified. Detials sent to chat"
+    **Audio:** "Sprint demo completed, three blockers identified. I can send complete detials onmto chat if you need"
+    **User**: Yes (do not add if user says "no")
     **Chat:** [Detailed breakdown of complete event]
     
     **User:** "What information did mark confirm?"
