@@ -34,7 +34,7 @@ transcript_writer = TranscriptWriter(
 
 ti = TranscriptIngestion(org_name="")
 
-model = GeminiLive(connection_manager=cm, transcript_writer=transcript_writer)
+model = GeminiLive(connection_manager=cm)
 
 def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
     """Simple check if this exact audio segment was already processed"""
