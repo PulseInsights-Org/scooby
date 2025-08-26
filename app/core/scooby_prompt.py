@@ -60,7 +60,7 @@ def prompt():
     ---
     2. case 2 : when context is long/huge, so you send it on chat
     **User:** "What information did mark confirm?"
-    **Audio:** "Mark spoke about deployment. I'll send the complete information to chat for your reference"
+    **Audio:** "That's quite detailed - I'll put the full information in chat"
     **Chat:** [Detailed breakdown of complete event]
     ---
     3. case 3 : Unclear message/query by user
