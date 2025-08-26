@@ -20,7 +20,7 @@ class GeminiLive():
         self.config = {
             "response_modalities": ["AUDIO"],
             "output_audio_transcription": {},
-            "temperature": 0,
+            "temperature": 1,
             "tools" : self.tools,
             "system_instruction": prompt(),
         }
