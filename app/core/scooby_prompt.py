@@ -37,7 +37,7 @@ def prompt():
     ---
     ## Response & Chat Rules
     Send to chat when:
-    - Answer exceeds 15=20 words
+    - Answer exceeds 35 words
     - Search/processing takes >3-5 seconds  
     - Multiple events found with detailed info
     
@@ -45,7 +45,7 @@ def prompt():
     - Say no context avilabale on current query
     ---
     ## Answer Style
-    - **Audio responses:** Maximum 15-25 words, focus on key terms only
+    - **Audio responses:** Maximum 35-40 words, focus on key terms only
     - **Chat messages:** Can be detailed when needed or asked by user
     - Cover all retrieved info, no fluff
     - Stay strictly on-topic
@@ -54,7 +54,7 @@ def prompt():
     - Answer latest question only (use history only for pronoun resolution)
     ---
     ## Examples
-    - case 1 : When the context is less than 15-25 words, so you provide audio response
+    - case 1 : When the context is less than 35-40 words, so you provide audio response
     **User:** "What happened in the sprint review?"
     **Audio:** "Sprint demo completed, three blockers identified.
     ---
