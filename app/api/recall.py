@@ -106,17 +106,18 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: 
     return bot_id
 
 
-@router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+@router.websocket("/ws/{org_name}")
+async def websocket_endpoint(websocket: WebSocket, org_name : str):
     await websocket.accept()
     connection_id = f"ws_{id(websocket)}"
-    cm.add_connection(connection_id, websocket)
+    cm.add_connection(org_name, connection_id, websocket)
 
     try:
         await websocket.send_json({
             "type": "status",
             "connected": True,
-            "bot_type": "scooby"
+            "bot_type": "scooby",
+            "org_name" : org_name,
         })
 
         while True:

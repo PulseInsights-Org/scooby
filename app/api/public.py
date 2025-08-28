@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from fastapi.responses import RedirectResponse
 import os
 from app.api.recall import add_bot 
 
@@ -19,8 +20,8 @@ class MeetingRequest(BaseModel):
 
 
 @router.get("/")
-async def bot_html(request: Request):
-    return templates.TemplateResponse("bot.html", {"request": request})
+async def bot_html(request: Request, org_name : str):
+    return templates.TemplateResponse("bot.html", {"request": request, "org_name" : org_name})
 
 
 @router.post("/add_scooby")
@@ -32,4 +33,6 @@ async def add_scooby_bot(body : MeetingRequest, request: Request):
         return {
             "message": "Scooby Bot already exists, Please remove and try again"
         }
-    return {"bot_id": bot_id}
+    return RedirectResponse(
+        url=f"/?org_name={body.x_org_name}", status_code=303
+    )

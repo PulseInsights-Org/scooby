@@ -1,7 +1,8 @@
-let ws;
 let audioContext;
 let isModelSpeaking = false;
 const BOT_TYPE = 'scooby'; // This bot only responds to scooby messages
+const ORG_NAME = "{{ org_name }}";
+let ws;
 
 const pulseCoreEl = document.getElementById('pulseCore');
 const waveVisualizationEl = document.getElementById('waveVisualization');
@@ -26,11 +27,10 @@ async function initAudio() {
     }
 }
 
-function connectWebSocket() { 
-    const wsUrl = `wss://pulse-dev.scooby.getpulseinsights.ai/ws`;
+function connectWebSocket(org_name) { 
     console.group("connectWebSocket()");
+    const wsUrl = `wss://pulse-dev.scooby.getpulseinsights.ai/ws/${org_name}`;
     console.log("🌐 Connecting to:", wsUrl);
-    
     ws = new WebSocket(wsUrl);
     
     ws.onopen = function() {
@@ -61,7 +61,7 @@ function connectWebSocket() {
     ws.onclose = function(evt) {
         console.warn('⚠️ WS close:', { code: evt.code, reason: evt.reason, wasClean: evt.wasClean });
         updateStatus('disconnected');
-        setTimeout(connectWebSocket, 3000);
+        setTimeout(connectWebSocket(org_name), 3000);
     };
     
     ws.onerror = function(error) {
@@ -342,7 +342,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     console.group("DOMContentLoaded");
     console.log("📂 DOM ready, init audio + WS…");
     await initAudio();
-    connectWebSocket();
+    connectWebSocket(ORG_NAME);
     console.groupEnd();
 });
 
