@@ -175,7 +175,7 @@ class GeminiLive():
                             
                         if encoded:
                             logger.debug("sending audio")
-                            await self.connection_manager.send_to_tenant({
+                            await self.connection_manager.send_to_tenant(self.org_name, {
                                 "type": "audio",
                                 "data": encoded,
                                 "bot_type": "scooby",

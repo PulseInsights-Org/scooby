@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -10,8 +11,9 @@ class ParticipantsManager:
     participants field synchronized.
     """
 
-    def __init__(self):
+    def __init__(self, org_name: str = None, connection_manager=None):
         self._list: List[Dict] = []
+        self.org_name = org_name
 
     @property
     def list(self) -> List[Dict]:
@@ -38,12 +40,15 @@ class ParticipantsManager:
                 "extra_data": data.get("extra_data", {}),
                 "status": "joined",
             }
+            
+            action = "updated" if existing else "joined"
             if existing is None:
                 self._list.append(payload)
                 logger.info(f"Added participant: {participant_name}")
             else:
                 existing.update(payload)
                 logger.info(f"Updated participant: {participant_name}")
+            
         finally:
             pass
 
@@ -58,4 +63,25 @@ class ParticipantsManager:
         p = self.get(participant_id)
         if p:
             p["status"] = "left"
+            logger.info(f"Participant left: {p['name']}")
+            
+    
+    
+    def get_active_participants(self) -> List[Dict]:
+        """Get only participants who are currently joined."""
+        return [p for p in self._list if p["status"] == "joined"]
+    
+    def get_participant_count(self) -> int:
+        """Get count of active participants."""
+        return len(self.get_active_participants())
+    
+    def get_current_participants(self) -> List[Dict]:
+        """Gets all participants who are currently in the meeting (status == 'joined').
+        This function is designed to be used as a tool call in Gemini Live."""
+        return self.get_active_participants()
+    
+    def get_all_joined_participants(self) -> List[Dict]:
+        """Gets all participants who have joined the meeting, including those who later left.
+        This function is designed to be used as a tool call in Gemini Live."""
+        return self._list.copy()
             

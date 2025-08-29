@@ -11,6 +11,19 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
 
+# Global TranscriptWriter instance
+global_transcript_writer = None
+
+def get_global_transcript_writer():
+    global global_transcript_writer
+    if global_transcript_writer is None:
+        global_transcript_writer = TranscriptWriter(
+            enabled=True,
+            meeting_url="global",
+            org_name="default"
+        )
+    return global_transcript_writer
+
 
 class TranscriptWriter:
     """
@@ -39,7 +52,7 @@ class TranscriptWriter:
 
     def save_line(self, speaker: str, text: str) -> None:
         try:
-            if not self._enabled_getter():
+            if not self._enabled:
                 return
             if not os.path.exists(self._dir):
                 os.makedirs(self._dir, exist_ok=True)
@@ -98,6 +111,29 @@ class BotContext:
             logger.info(f"Current active bot: {self.bot_id}")
         except Exception as e:
             logger.exception(f"Error printing active bots: {e}")
+    
+    @staticmethod
+    def get_active_bot_for_org(org_name: str):
+        """Get the active bot for a specific organization, if any."""
+        from app.api.recall import registry
+        if org_name in registry._org_bots:
+            for bot_id in registry._org_bots[org_name]:
+                manager = registry._registry.get(bot_id)
+                if manager:
+                    return manager
+        return None
+    
+    @staticmethod
+    def has_active_bot_for_org(org_name: str) -> bool:
+        """Check if organization has any active bots."""
+        from app.api.recall import registry
+        return org_name in registry._org_bots and len(registry._org_bots[org_name]) > 0
+    
+    @staticmethod
+    def get_org_bot_ids(org_name: str) -> list:
+        """Get all bot IDs for a specific organization."""
+        from app.api.recall import registry
+        return list(registry._org_bots.get(org_name, set()))
 
     # Shared guard to avoid duplicate ingestions per bot
     _transcript_ingestion_lock = asyncio.Lock()

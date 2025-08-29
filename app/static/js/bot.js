@@ -1,7 +1,7 @@
 let audioContext;
 let isModelSpeaking = false;
 const BOT_TYPE = 'scooby'; // This bot only responds to scooby messages
-const ORG_NAME = "{{ org_name }}";
+const ORG_NAME = new URLSearchParams(window.location.search).get('org_name') || 'default';
 let ws;
 
 const pulseCoreEl = document.getElementById('pulseCore');
@@ -29,7 +29,7 @@ async function initAudio() {
 
 function connectWebSocket(org_name) { 
     console.group("connectWebSocket()");
-    const wsUrl = `wss://pulse-dev.scooby.getpulseinsights.ai/ws/${org_name}`;
+    const wsUrl = `wss://567dccc1b88f.ngrok-free.app/ws/${org_name}`;
     console.log("🌐 Connecting to:", wsUrl);
     ws = new WebSocket(wsUrl);
     

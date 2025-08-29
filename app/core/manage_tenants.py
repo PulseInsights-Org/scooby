@@ -1,6 +1,6 @@
-from typing import Dict
+from typing import Dict, List, Optional
 from app.service.participants import ParticipantsManager
-from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
+from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor, get_global_transcript_writer
 from app.service.transcript_ingestion import TranscriptIngestion
 
 class TenantManager():
@@ -13,21 +13,20 @@ class TenantManager():
                  model,
                  recall) -> None:
         self.model = model
-        self.bot_id = bot_id,
+        self.bot_id = bot_id
         self.meeting_url = meeting_url
         self.org_name = org_name
         self.bc = BotContext()
-        self.pm = ParticipantsManager()
+        self.pm = ParticipantsManager(org_name=org_name)
         self.processed_audios = processed_audio
         self.model.bot_id = self.bot_id
         self.rb = recall
-        self.writer = TranscriptWriter(
-                    enabled = False,
-                    meeting_url =self.meeting_url,
-                    org_name=None
-        )
+        self.writer = get_global_transcript_writer()
+        # Update the global writer with current org info
+        self.writer.org_name = org_name
+        self.writer._meeting_url = meeting_url
         self.monitor = InactivityMonitor(
-            get_current_bot_id=self.bot_id,
+            get_current_bot_id=self.get_bot_id,
             participants_manager=self.pm,
             model=self.model,
             transcript_writer=self.writer,
@@ -38,15 +37,18 @@ class TenantManager():
         self.monitor.start(self.bot_id)
         self.model.org_name = org_name
     
+    def get_bot_id(self):
+        return self.bot_id
+    
     def _is_duplicate_audio_segment(self, start_time: float, end_time: float, speaker: str) -> bool:
         """Simple check if this exact audio segment was already processed"""
         segment_key = f"{start_time}:{end_time}:{speaker}"
         
-        if segment_key in self.processed_audio:
+        if segment_key in self.processed_audios:
             print(f"Duplicate audio segment detected: {start_time}s to {end_time}s from {speaker}")
             return True
             
-        self.processed_audio.add(segment_key)
+        self.processed_audios.add(segment_key)
         return False
 
     def _set_inactive(self):
@@ -73,15 +75,27 @@ class TenantRegistry:
     def __init__(self):
         # dict[bot_id] = TenantManager
         self._registry: Dict[str, TenantManager] = {}
+        # dict[org_name] = set of active bot_ids
+        self._org_bots: Dict[str, set] = {}
 
     def add_manager(self, bot_id: str, manager: TenantManager):
         self._registry[bot_id] = manager
+        org_name = manager.org_name
+        if org_name not in self._org_bots:
+            self._org_bots[org_name] = set()
+        self._org_bots[org_name].add(bot_id)
 
     def get_manager(self, bot_id: str) -> TenantManager:
         return self._registry.get(bot_id)
 
     def remove_manager(self, bot_id: str):
-        self._registry.pop(bot_id)
+        manager = self._registry.pop(bot_id, None)
+        if manager:
+            org_name = manager.org_name
+            if org_name in self._org_bots:
+                self._org_bots[org_name].discard(bot_id)
+                if not self._org_bots[org_name]:
+                    del self._org_bots[org_name]
 
     def list_managers(self):
         return list(self._registry.values())

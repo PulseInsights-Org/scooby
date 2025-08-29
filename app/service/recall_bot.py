@@ -26,7 +26,7 @@ class RecallBot():
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/api/webhook/recall",
+                        "url": "https://567dccc1b88f.ngrok-free.app/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
@@ -44,7 +44,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": f"https://pulse-dev.scooby.getpulseinsights.ai/{org_name}"
+                        "url": f"https://567dccc1b88f.ngrok-free.app/?org_name={org_name}"
                     }
                 }
             },

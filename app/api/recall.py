@@ -5,7 +5,7 @@ from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
 from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
-from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
+from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor, get_global_transcript_writer
 from app.service.transcript_ingestion import TranscriptIngestion
 from app.core.manage_tenants import TenantManager , TenantRegistry
 
@@ -30,9 +30,8 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: 
         model1 = GeminiLive(connection_manager=cm)
         tm1 = TenantManager(bot_id=bot_id,
                             org_name=x_org_name,
-                            processed_audio=None,
+                            processed_audio=set(),
                             meeting_url = meeting_url,
-                            is_transcript = is_transcript,
                             model = model1,
                             recall = rb)
         
@@ -59,10 +58,10 @@ async def websocket_endpoint(websocket: WebSocket, org_name : str):
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket {connection_id} disconnected")
-        cm.remove_connection(connection_id)
+        cm.remove_connection(org_name, connection_id)
     except Exception as e:
         logger.exception(f"WebSocket error for {connection_id}: {e}")
-        cm.remove_connection(connection_id)
+        cm.remove_connection(org_name, connection_id)
 
 
 @router.post("/api/webhook/recall/bot-status")
@@ -197,7 +196,9 @@ async def recall_webhook(request: Request):
                 return {"status": "ok"}
             
             logger.info(f"Transcribed text from {speaker}: {spoken_text}")
-            tm.writer.save_line(speaker, spoken_text)
+            global_writer = get_global_transcript_writer()
+            global_writer.org_name = tm.org_name
+            global_writer.save_line(speaker, spoken_text)
             
             if "scooby" in spoken_text.lower():
                 logger.info(f"Scooby mentioned by {speaker}: {spoken_text}")
@@ -221,10 +222,10 @@ async def recall_webhook(request: Request):
             if action == "join":
                 tm.pm.add(participant_data)
                 try:
-                    tm.model.participants = list(tm.pm.list)
+                    tm.model.participants = list(tm.pm.get_active_participants())
                 except Exception:
                     pass
-                logger.info(f"Total participants: {len(tm.pm.list)}")
+                logger.info(f"Total active participants: {tm.pm.get_participant_count()}")
 
         elif event_type == "participant_events.leave":
             tm.monitor.record_activity()
@@ -235,12 +236,10 @@ async def recall_webhook(request: Request):
             if participant_name.lower() != "scooby":
                 tm.pm.mark_left(participant_id)
                 try:
-                    tm.model.participants = list(tm.pm.list)
+                    tm.model.participants = list(tm.pm.get_active_participants())
                 except Exception:
                     pass
-                p = tm.pm.get(participant_id)
-                if p:
-                    logger.info(f"Participant left: {p['name']}")
+                logger.info(f"Total active participants: {tm.pm.get_participant_count()}")
 
         else:
             logger.warning(f"Unhandled realtime event: {event_type}")
