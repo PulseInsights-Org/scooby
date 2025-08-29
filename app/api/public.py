@@ -29,10 +29,4 @@ async def add_scooby_bot(body : MeetingRequest, request: Request):
     meeting_url = body.meeting_url
     is_transcript = body.saveTranscript or body.isTranscript
     bot_id = await add_bot(meeting_url, is_transcript, x_org_name=body.x_org_name)
-    if not bot_id:
-        return {
-            "message": "Scooby Bot already exists, Please remove and try again"
-        }
-    return RedirectResponse(
-        url=f"/?org_name={body.x_org_name}", status_code=303
-    )
+    return bot_id

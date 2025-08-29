@@ -7,6 +7,7 @@ from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
 from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
 from app.service.transcript_ingestion import TranscriptIngestion
+from app.core.manage_tenants import TenantManager , TenantRegistry
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -16,93 +17,26 @@ TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
 
 cm = ConnectionManager()
 rb = RecallBot()
-participants_manager = ParticipantsManager()
-bot_context = BotContext()
+registry = TenantRegistry()
 
-current_bot_id = None
-current_meeting_url = None
-transcripts_enabled = False
-current_x_org_name = None
-processed_audio_segments = set()
-
-transcript_writer = TranscriptWriter(
-    enabled_getter=lambda: transcripts_enabled,
-    transcripts_dir=TRANSCRIPTS_DIR,
-    meeting_url_getter=lambda: current_meeting_url,
-    org_name=None
-)
 
 ti = TranscriptIngestion(org_name="")
 
-model = GeminiLive(connection_manager=cm)
-
-def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
-    """Simple check if this exact audio segment was already processed"""
-    segment_key = f"{start_time}:{end_time}:{speaker}"
-    
-    if segment_key in processed_audio_segments:
-        print(f"Duplicate audio segment detected: {start_time}s to {end_time}s from {speaker}")
-        return True
-        
-    processed_audio_segments.add(segment_key)
-    return False
-
-def _set_inactive():
-    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name   
-    current_bot_id = None
-    current_meeting_url = None
-    transcripts_enabled = False
-    current_x_org_name = None
-    try:
-        bot_context.clear()
-        BotContext.remove_model_context(model)
-    except Exception:
-        pass
-
-# Inactivity monitor instance
-inactivity_monitor = InactivityMonitor(
-    get_current_bot_id=lambda: current_bot_id,
-    participants_manager=participants_manager,
-    model=model,
-    transcript_writer=transcript_writer,
-    bot_name="scooby",
-    remove_bot=rb.handle_bot_removal,
-    on_cleared=lambda: (_set_inactive(), bot_context.print_active_bot()),
-)
-
 async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: str) -> str | None:
     """Create a Recall bot and update local module state."""
-    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name
     
-    # Enforce single active bot at a time
-    if current_bot_id is not None:
-        # A bot is already active; do not create another
-        return None
-    bot_id = await rb.add_bots(meeting_url)
+    bot_id = await rb.add_bots(meeting_url=meeting_url, org_name=x_org_name)
     if bot_id:
-        current_bot_id = bot_id
-        current_meeting_url = meeting_url
-        transcripts_enabled = is_transcript
-        current_x_org_name = x_org_name
-        transcript_writer.org_name = current_x_org_name
-        try:
-            bot_context.bot_id = bot_id
-            bot_context.meeting_url = meeting_url
-            bot_context.transcripts_enabled = is_transcript
-        except Exception:
-            pass
-        participants_manager.reset()
-        try:
-            model.participants = list(participants_manager.list)
-        except Exception:
-            pass
-        try:
-            model.bot_id = bot_id
-        except Exception:
-            pass
-        bot_context.print_active_bot()
-        # Initialize inactivity tracking and start watcher
-        inactivity_monitor.start(bot_id)
+        model1 = GeminiLive(connection_manager=cm)
+        tm1 = TenantManager(bot_id=bot_id,
+                            org_name=x_org_name,
+                            processed_audio=None,
+                            meeting_url = meeting_url,
+                            is_transcript = is_transcript,
+                            model = model1,
+                            recall = rb)
+        
+        registry.add_manager(bot_id=bot_id, manager=tm1)
     return bot_id
 
 
@@ -176,6 +110,7 @@ async def recall_bot_status_webhook(request: Request):
                 or (payload.get("bot", {}) or {}).get("id")
                 or payload.get("id")
             )
+            tm = registry.get_manager(bot_id=bot_id)
             status = (
                 mapped_status
                 or data.get("status")
@@ -183,20 +118,6 @@ async def recall_bot_status_webhook(request: Request):
                 or payload.get("status")
             )
             sub_code = data.get("sub_code") or payload.get("sub_code")
-
-            logger.info(f"Bot {bot_id} status changed to: {status}")
-            if bot_id is None:
-                logger.debug(f"Bot Status Payload (missing bot_id): {payload}")
-                # Single active bot model: fallback to current_bot_id to avoid missing cleanup
-                if current_bot_id:
-                    bot_id = current_bot_id
-                    logger.debug(f"Falling back to current_bot_id for status handling: {bot_id}")
-            if sub_code:
-                logger.info(f"Sub code: {sub_code}")
-
-            if current_bot_id and bot_id != current_bot_id:
-                logger.debug(f"Ignoring status for non-current bot {bot_id}")
-                return {"status": "ok"}
 
             if status == "joining_call":
                 logger.info(f"Bot {bot_id} is joining the meeting")
@@ -210,86 +131,25 @@ async def recall_bot_status_webhook(request: Request):
             elif status == "call_ended":
                 logger.info(f"Bot {bot_id} call ended")
                 try:
-                    await BotContext.ingest_and_cleanup_transcript(
-                        bot_id,
-                        transcripts_enabled=transcripts_enabled,
-                        transcripts_dir=TRANSCRIPTS_DIR,
-                        meeting_url=current_meeting_url,
-                        ti=ti,
-                        x_org_name=current_x_org_name,
-                        transcript_writer=transcript_writer,
-                        logger=logger,
-                    )
-                    participants_manager.reset()
-                    try:
-                        model.participants = []
-                    except Exception:
-                        pass
-                    # stop inactivity monitor
-                    try:
-                        inactivity_monitor.stop()
-                    except Exception:
-                        pass
-                    _set_inactive()
+                    await tm.remove_cleanup_ingest(ti=ti)
                 except Exception:
                     logger.exception("Error while handling call_ended cleanup")
-                bot_context.print_active_bot()
 
             elif status == "done":
                 logger.info(f"Bot {bot_id} finished successfully")
                 try:
-                    await BotContext.ingest_and_cleanup_transcript(
-                        bot_id,
-                        transcripts_enabled=transcripts_enabled,
-                        transcripts_dir=TRANSCRIPTS_DIR,
-                        meeting_url=current_meeting_url,
-                        ti=ti,
-                        x_org_name=current_x_org_name,
-                        transcript_writer=transcript_writer,
-                        logger=logger,
-                    )
-                    participants_manager.reset()
-                    try:
-                        model.participants = []
-                    except Exception:
-                        pass
-                    _set_inactive()
-                    try:
-                        inactivity_monitor.stop()
-                    except Exception:
-                        pass
+                    await tm.remove_cleanup_ingest(ti=ti)
                 except Exception:
                     logger.exception("Error while handling done cleanup")
-                bot_context.print_active_bot()
-
+ 
             elif status == "fatal":
                 logger.error(f"Bot {bot_id} encountered a fatal error")
                 if sub_code:
                     logger.error(f"Fatal error reason: {sub_code}")
                 try:
-                    await BotContext.ingest_and_cleanup_transcript(
-                        bot_id,
-                        transcripts_enabled=transcripts_enabled,
-                        transcripts_dir=TRANSCRIPTS_DIR,
-                        meeting_url=current_meeting_url,
-                        ti=ti,
-                        x_org_name=current_x_org_name,
-                        transcript_writer=transcript_writer,
-                        logger=logger,
-                    )
-                    participants_manager.reset()
-                    try:
-                        model.participants = []
-                    except Exception:
-                        pass
-                    _set_inactive()
-                    try:
-                        inactivity_monitor.stop()
-                    except Exception:
-                        pass
+                    await tm.remove_cleanup_ingest(ti=ti)
                 except Exception:
                     logger.exception("Error while handling fatal cleanup")
-                bot_context.print_active_bot()
 
             else:
                 logger.warning(f"Unhandled bot status: {status}")
@@ -314,18 +174,11 @@ async def recall_webhook(request: Request):
         data = payload.get("data", {})
         bot_info = data.get("bot", {})
         bot_id = bot_info.get("id")
-
-        if current_bot_id is None:
-            logger.debug("No current bot set; ignoring realtime event")
-            return {"status": "ok"}
-
-        if current_bot_id and bot_id != current_bot_id:
-            logger.debug(f"Ignoring realtime event for non-current bot {bot_id}")
-            return {"status": "ok"}
+        tm = registry.get_manager(bot_id=bot_id)
 
         if event_type == "transcript.data":
-            inactivity_monitor.record_activity()
-            inactivity_monitor.record_transcript()
+            tm.monitor.record_activity()
+            tm.monitor.record_transcript()
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
@@ -335,57 +188,56 @@ async def recall_webhook(request: Request):
         
             print(f"Processing audio segment: {start_time}s to {end_time}s from {speaker}")
             
-            if _is_duplicate_audio_segment(start_time, end_time, speaker):
+            
+            if tm._is_duplicate_audio_segment(start_time, end_time, speaker):
                 print(f"Skipping duplicate audio segment from {speaker}")
                 return {"status": "ok"}
             
             logger.info(f"Transcribed text from {speaker}: {spoken_text}")
-            transcript_writer.save_line(speaker, spoken_text)
+            tm.writer.save_line(speaker, spoken_text)
             
             if "scooby" in spoken_text.lower():
                 logger.info(f"Scooby mentioned by {speaker}: {spoken_text}")
                 try:
                     logger.debug(f"Sending to Gemini: {spoken_text}")
-                    await model.connect_to_gemini(text=spoken_text)
+                    await tm.model.connect_to_gemini(text=spoken_text)
                     logger.debug("Sent to Gemini successfully")
                 except Exception as e:
                     logger.exception(f"Error sending to Gemini: {e}")
 
             else:
-                model.chat_history.append(
+                tm.model.chat_history.append(
                     {"role": "user", "content": spoken_text.strip(), "type": "audio_response"}
                 )
 
         elif event_type == "participant_events.join":
-            inactivity_monitor.record_activity()
+            tm.monitor.record_activity()
             participant_data = payload["data"]["data"]["participant"]
             action = payload["data"]["data"]["action"]
 
             if action == "join":
-                participants_manager.add(participant_data)
+                tm.pm.add(participant_data)
                 try:
-                    model.participants = list(participants_manager.list)
+                    tm.model.participants = list(tm.pm.list)
                 except Exception:
                     pass
-                logger.info(f"Total participants: {len(participants_manager.list)}")
-                bot_context.print_active_bot()
+                logger.info(f"Total participants: {len(tm.pm.list)}")
 
         elif event_type == "participant_events.leave":
-            inactivity_monitor.record_activity()
+            tm.monitor.record_activity()
             participant_data = payload["data"]["data"]["participant"]
             participant_id = participant_data["id"]
             participant_name = participant_data["name"]
 
             if participant_name.lower() != "scooby":
-                participants_manager.mark_left(participant_id)
+                tm.pm.mark_left(participant_id)
                 try:
-                    model.participants = list(participants_manager.list)
+                    tm.model.participants = list(tm.pm.list)
                 except Exception:
                     pass
-                p = participants_manager.get(participant_id)
+                p = tm.pm.get(participant_id)
                 if p:
                     logger.info(f"Participant left: {p['name']}")
-            bot_context.print_active_bot()
 
         else:
             logger.warning(f"Unhandled realtime event: {event_type}")

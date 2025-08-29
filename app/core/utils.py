@@ -4,8 +4,12 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 import uuid
+from dataclasses import dataclass, field
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
+TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
 
 
 class TranscriptWriter:
@@ -13,21 +17,19 @@ class TranscriptWriter:
     Handles writing transcript lines to disk, controlled by an enable flag.
 
     Parameters:
-    - enabled_getter: Callable[[], bool] that returns whether writing is enabled
-    - transcripts_dir: directory path where transcripts are stored
-    - meeting_url_getter: Callable[[], str | None] to fetch current meeting url for naming
+    - enabled_getter:
+    - meeting_url :
     """
 
     def __init__(
         self,
-        enabled_getter: Callable[[], bool],
-        transcripts_dir: str,
-        meeting_url_getter: Callable[[], str | None],
+        enabled: bool,
+        meeting_url: str,
         org_name = None
     ):
-        self._enabled_getter = enabled_getter
-        self._dir = transcripts_dir
-        self._meeting_url_getter = meeting_url_getter
+        self._enabled = enabled
+        self._dir = TRANSCRIPTS_DIR
+        self._meeting_url = meeting_url
         self.org_name = org_name
         self.id = str(uuid.uuid4())[:4]
         try:
@@ -106,20 +108,19 @@ class BotContext:
         bot_id: str,
         *,
         transcripts_enabled: bool,
-        transcripts_dir: str,
         meeting_url: str | None,
         ti,  # TranscriptIngestion instance
         x_org_name: str,
         transcript_writer,  # TranscriptWriter instance
-        logger: logging.Logger,
     ) -> None:
         try:
             if not transcripts_enabled:
                 return
             # Build transcript file path to match TranscriptWriter.save_line naming
             # => "Scooby_{org_name}_{writer.id}.txt"
+            #todo : set all as default transcript dir
             transcript_path = os.path.join(
-                transcripts_dir,
+                TRANSCRIPTS_DIR,
                 f"Scooby_{x_org_name}_{getattr(transcript_writer, 'id', 'unknown')}.txt",
             )
 
@@ -273,3 +274,7 @@ class InactivityMonitor:
                 self._task.cancel()
         finally:
             self._task = None
+
+
+
+        

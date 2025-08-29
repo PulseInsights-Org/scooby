@@ -12,7 +12,7 @@ class RecallBot():
     def __init__(self) -> None:
         pass
     
-    async def add_bots(self, meeting_url : str, bot_name : str = "scooby"):
+    async def add_bots(self, meeting_url : str, org_name : str, bot_name : str = "scooby"):
     
         recall_api_url = "https://us-west-2.recall.ai/api/v1/bot/"
         recall_api_key = os.getenv("RECALL_API_KEY")
@@ -44,7 +44,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/"
+                        "url": f"https://pulse-dev.scooby.getpulseinsights.ai/{org_name}"
                     }
                 }
             },
