@@ -36,6 +36,7 @@ class TenantManager():
             on_cleared=lambda: (self._set_inactive(), self.bc.print_active_bot()),
         )
         self.monitor.start(self.bot_id)
+        self.model.org_name = org_name
     
     def _is_duplicate_audio_segment(self, start_time: float, end_time: float, speaker: str) -> bool:
         """Simple check if this exact audio segment was already processed"""

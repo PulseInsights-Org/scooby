@@ -132,6 +132,7 @@ async def recall_bot_status_webhook(request: Request):
                 logger.info(f"Bot {bot_id} call ended")
                 try:
                     await tm.remove_cleanup_ingest(ti=ti)
+                    registry.remove_manager(bot_id=bot_id)
                 except Exception:
                     logger.exception("Error while handling call_ended cleanup")
 
@@ -139,6 +140,7 @@ async def recall_bot_status_webhook(request: Request):
                 logger.info(f"Bot {bot_id} finished successfully")
                 try:
                     await tm.remove_cleanup_ingest(ti=ti)
+                    registry.remove_manager(bot_id=bot_id)
                 except Exception:
                     logger.exception("Error while handling done cleanup")
  
@@ -148,6 +150,7 @@ async def recall_bot_status_webhook(request: Request):
                     logger.error(f"Fatal error reason: {sub_code}")
                 try:
                     await tm.remove_cleanup_ingest(ti=ti)
+                    registry.remove_manager(bot_id=bot_id)
                 except Exception:
                     logger.exception("Error while handling fatal cleanup")
 

@@ -31,6 +31,7 @@ class GeminiLive():
         self.current_transcription = ""
         self.bot_id = None
         self.participants = []
+        self.org_name = None
     
     async def _async_enumerate(self, aiterable):
         n = 0
@@ -174,10 +175,11 @@ class GeminiLive():
                             
                         if encoded:
                             logger.debug("sending audio")
-                            await self.connection_manager.send_to_all({
+                            await self.connection_manager.send_to_tenant({
                                 "type": "audio",
                                 "data": encoded,
-                                "bot_type": "scooby"
+                                "bot_type": "scooby",
+                                "org_name" : self.org_name
                             })
                 elif response.tool_call:
                     try:
