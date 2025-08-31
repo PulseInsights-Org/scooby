@@ -25,6 +25,12 @@ transcripts_enabled = False
 current_x_org_name = None
 processed_audio_segments = set()
 
+SCOOBY_VARIANTS = [
+    "scooby", "scoobie", "skuby", "skubi", "scubi",
+    "scuby", "scobee", "scobie", "skoby", "skooby",
+    "scoob", "scube", "skube", "scoobee"
+]
+
 transcript_writer = TranscriptWriter(
     enabled_getter=lambda: transcripts_enabled,
     transcripts_dir=TRANSCRIPTS_DIR,
@@ -341,7 +347,7 @@ async def recall_webhook(request: Request):
             logger.info(f"Transcribed text from {speaker}: {spoken_text}")
             transcript_writer.save_line(speaker, spoken_text)
             
-            if "scooby" in spoken_text.lower():
+            if any(alias in spoken_text.lower() for alias in SCOOBY_VARIANTS):
                 logger.info(f"Scooby mentioned by {speaker}: {spoken_text}")
                 try:
                     logger.debug(f"Sending to Gemini: {spoken_text}")
