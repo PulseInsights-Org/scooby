@@ -6,13 +6,21 @@ from google.genai.types import FunctionDeclaration
 from google.genai import types 
 from app.core.scooby_prompt import prompt
 import logging
+import os
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 
 class GeminiLive():
     
-    def __init__(self, api_key = "AIzaSyBUjH-PkLSZzyDxFXeTlTw9s8PaZq2nNPc", connection_manager: ConnectionManager = None):
+    def __init__(self, api_key = None, connection_manager: ConnectionManager = None):
+        if api_key is None:
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY environment variable is required")
         self.client = genai.Client(api_key=api_key)
         self.model = "gemini-live-2.5-flash-preview"
         self.tools = []
