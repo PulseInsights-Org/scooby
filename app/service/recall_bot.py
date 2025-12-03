@@ -26,7 +26,7 @@ class RecallBot():
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/api/webhook/recall",
+                        "url": "https://doleritic-marsha-unjacketed.ngrok-free.dev/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
@@ -36,7 +36,10 @@ class RecallBot():
                 ],
                 "transcript": {
                     "provider": {
-                        "meeting_captions": {}
+                        "recallai_streaming": {
+                             "mode": "prioritize_low_latency",
+                             "language_code": "en",
+                        }
                     }
                 }
             },
@@ -44,7 +47,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/"
+                        "url": "https://doleritic-marsha-unjacketed.ngrok-free.dev"
                     }
                 }
             },

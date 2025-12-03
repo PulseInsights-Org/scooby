@@ -3,10 +3,14 @@ import os
 import logging
 from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
-from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
 from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
 from app.service.transcript_ingestion import TranscriptIngestion
+from app.service.transcript_buffer import TranscriptBuffer
+from app.service.summarization_service import SummarizationService
+from app.service.summary_storage import SummaryStorage
+from app.core.config import get_config
+from typing import Optional
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,11 +29,10 @@ transcripts_enabled = False
 current_x_org_name = None
 processed_audio_segments = set()
 
-SCOOBY_VARIANTS = [
-    "scooby", "scoobie", "skuby", "skubi", "scubi",
-    "scuby", "scobee", "scobie", "skoby", "skooby",
-    "scoob", "scube", "skube", "scoobee"
-]
+config = get_config()
+transcript_buffer: Optional[TranscriptBuffer] = None
+summarization_service = SummarizationService()
+summary_storage: Optional[SummaryStorage] = None
 
 transcript_writer = TranscriptWriter(
     enabled_getter=lambda: transcripts_enabled,
@@ -39,8 +42,6 @@ transcript_writer = TranscriptWriter(
 )
 
 ti = TranscriptIngestion(org_name="")
-
-model = GeminiLive(connection_manager=cm)
 
 def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
     """Simple check if this exact audio segment was already processed"""
@@ -54,14 +55,16 @@ def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str
     return False
 
 def _set_inactive():
-    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name   
+    global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name
+    global transcript_buffer, summary_storage
     current_bot_id = None
     current_meeting_url = None
     transcripts_enabled = False
     current_x_org_name = None
+    transcript_buffer = None
+    summary_storage = None
     try:
         bot_context.clear()
-        BotContext.remove_model_context(model)
     except Exception:
         pass
 
@@ -69,7 +72,7 @@ def _set_inactive():
 inactivity_monitor = InactivityMonitor(
     get_current_bot_id=lambda: current_bot_id,
     participants_manager=participants_manager,
-    model=model,
+    model=None,  # No longer using Gemini model
     transcript_writer=transcript_writer,
     bot_name="scooby",
     remove_bot=rb.handle_bot_removal,
@@ -79,10 +82,9 @@ inactivity_monitor = InactivityMonitor(
 async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: str) -> str | None:
     """Create a Recall bot and update local module state."""
     global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name
-    
-    # Enforce single active bot at a time
+    global transcript_buffer, summary_storage
+
     if current_bot_id is not None:
-        # A bot is already active; do not create another
         return None
     bot_id = await rb.add_bots(meeting_url)
     if bot_id:
@@ -91,6 +93,18 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: 
         transcripts_enabled = is_transcript
         current_x_org_name = x_org_name
         transcript_writer.org_name = current_x_org_name
+
+        # Initialize buffer and storage
+        transcript_buffer = TranscriptBuffer(
+            max_items=config.buffer_max_items,
+            max_seconds=config.buffer_max_seconds
+        )
+        summary_storage = SummaryStorage(
+            base_dir=BASE_DIR,
+            org_name=x_org_name,
+            meeting_id=bot_id
+        )
+
         try:
             bot_context.bot_id = bot_id
             bot_context.meeting_url = meeting_url
@@ -98,18 +112,50 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: 
         except Exception:
             pass
         participants_manager.reset()
-        try:
-            model.participants = list(participants_manager.list)
-        except Exception:
-            pass
-        try:
-            model.bot_id = bot_id
-        except Exception:
-            pass
         bot_context.print_active_bot()
         # Initialize inactivity tracking and start watcher
         inactivity_monitor.start(bot_id)
     return bot_id
+
+
+async def _process_buffer_and_summarize():
+    """Process buffered transcripts to extract events and update global summary"""
+    global transcript_buffer, summary_storage
+
+    if not transcript_buffer or transcript_buffer.is_empty():
+        return
+
+    try:
+        # Get buffered items
+        items = transcript_buffer.flush()
+        logger.info(f"Processing {len(items)} buffered transcript items")
+
+        # Get current summary for continuity
+        current_summary = None
+        if summary_storage and config.continuity_enabled:
+            current_summary = await summary_storage.get_current_summary()
+            if current_summary:
+                logger.debug(f"Using current summary for context ({len(current_summary)} chars)")
+
+        # Process segment: extract events + update summary
+        result = await summarization_service.process_segment(items, current_summary)
+
+        if not summary_storage:
+            logger.warning("No summary storage available")
+            return
+
+        # Save events (append to timeline)
+        if result.get('events'):
+            await summary_storage.append_events(result['events'])
+            logger.info(f"Saved {len(result['events'])} events to timeline")
+
+        # Replace summary (global update)
+        if result.get('summary'):
+            await summary_storage.replace_summary(result['summary'])
+            logger.info(f"Updated global summary: {len(result['summary'])} chars")
+
+    except Exception as e:
+        logger.exception(f"Error processing buffer and summarizing: {e}")
 
 
 @router.websocket("/ws")
@@ -142,11 +188,9 @@ async def recall_bot_status_webhook(request: Request):
     try:
         payload = await request.json()
         logger.debug(f"Bot Status Payload: {payload}")
-        # Some Recall deliveries may set `event` instead of `type`
         event_type = (payload.get("type") or payload.get("event") or "").strip() or None
         data = payload.get("data", {}) or {}
         if not event_type:
-            # Log full payload at INFO to aid debugging when schema varies
             logger.info(f"Bot Status Payload (no event/type): {payload}")
 
         # Accept common variants and explicit bot.* events
@@ -215,6 +259,11 @@ async def recall_bot_status_webhook(request: Request):
             elif status == "call_ended":
                 logger.info(f"Bot {bot_id} call ended")
                 try:
+                    # Flush remaining buffer before cleanup
+                    if transcript_buffer and not transcript_buffer.is_empty():
+                        logger.info("Flushing remaining buffered transcripts before cleanup")
+                        await _process_buffer_and_summarize()
+
                     await BotContext.ingest_and_cleanup_transcript(
                         bot_id,
                         transcripts_enabled=transcripts_enabled,
@@ -226,10 +275,6 @@ async def recall_bot_status_webhook(request: Request):
                         logger=logger,
                     )
                     participants_manager.reset()
-                    try:
-                        model.participants = []
-                    except Exception:
-                        pass
                     # stop inactivity monitor
                     try:
                         inactivity_monitor.stop()
@@ -243,6 +288,11 @@ async def recall_bot_status_webhook(request: Request):
             elif status == "done":
                 logger.info(f"Bot {bot_id} finished successfully")
                 try:
+                    # Flush remaining buffer before cleanup
+                    if transcript_buffer and not transcript_buffer.is_empty():
+                        logger.info("Flushing remaining buffered transcripts before cleanup")
+                        await _process_buffer_and_summarize()
+
                     await BotContext.ingest_and_cleanup_transcript(
                         bot_id,
                         transcripts_enabled=transcripts_enabled,
@@ -254,10 +304,6 @@ async def recall_bot_status_webhook(request: Request):
                         logger=logger,
                     )
                     participants_manager.reset()
-                    try:
-                        model.participants = []
-                    except Exception:
-                        pass
                     _set_inactive()
                     try:
                         inactivity_monitor.stop()
@@ -272,6 +318,11 @@ async def recall_bot_status_webhook(request: Request):
                 if sub_code:
                     logger.error(f"Fatal error reason: {sub_code}")
                 try:
+                    # Flush remaining buffer before cleanup
+                    if transcript_buffer and not transcript_buffer.is_empty():
+                        logger.info("Flushing remaining buffered transcripts before cleanup")
+                        await _process_buffer_and_summarize()
+
                     await BotContext.ingest_and_cleanup_transcript(
                         bot_id,
                         transcripts_enabled=transcripts_enabled,
@@ -283,10 +334,6 @@ async def recall_bot_status_webhook(request: Request):
                         logger=logger,
                     )
                     participants_manager.reset()
-                    try:
-                        model.participants = []
-                    except Exception:
-                        pass
                     _set_inactive()
                     try:
                         inactivity_monitor.stop()
@@ -334,32 +381,38 @@ async def recall_webhook(request: Request):
             words = payload["data"]["data"]["words"]
             speaker = payload["data"]["data"]["participant"]["name"]
             spoken_text = " ".join([w["text"] for w in words])
-            
+
             start_time = words[0]["start_timestamp"]["relative"]
             end_time = words[-1]["end_timestamp"]["relative"]
-        
+
             print(f"Processing audio segment: {start_time}s to {end_time}s from {speaker}")
-            
+
             if _is_duplicate_audio_segment(start_time, end_time, speaker):
                 print(f"Skipping duplicate audio segment from {speaker}")
                 return {"status": "ok"}
-            
-            logger.info(f"Transcribed text from {speaker}: {spoken_text}")
-            transcript_writer.save_line(speaker, spoken_text)
-            
-            if any(alias in spoken_text.lower() for alias in SCOOBY_VARIANTS):
-                logger.info(f"Scooby mentioned by {speaker}: {spoken_text}")
-                try:
-                    logger.debug(f"Sending to Gemini: {spoken_text}")
-                    await model.connect_to_gemini(text=spoken_text)
-                    logger.debug("Sent to Gemini successfully")
-                except Exception as e:
-                    logger.exception(f"Error sending to Gemini: {e}")
 
-            else:
-                model.chat_history.append(
-                    {"role": "user", "content": spoken_text.strip(), "type": "audio_response"}
+            logger.info(f"Transcribed text from {speaker}: {spoken_text}")
+
+            # Save to raw transcript file with Recall.ai timestamps
+            if summary_storage:
+                await summary_storage.save_transcript_line(
+                    speaker=speaker,
+                    text=spoken_text,
+                    start_timestamp=start_time,
+                    end_timestamp=end_time
                 )
+
+            # Also save via transcript_writer for backward compatibility
+            transcript_writer.save_line(speaker, spoken_text)
+
+            # Add to buffer
+            if transcript_buffer:
+                transcript_buffer.add(speaker, spoken_text, start_time, end_time)
+
+                # Check if buffer should flush
+                if transcript_buffer.should_flush():
+                    logger.info("Buffer flush condition met, processing transcripts...")
+                    await _process_buffer_and_summarize()
 
         elif event_type == "participant_events.join":
             inactivity_monitor.record_activity()
@@ -368,10 +421,6 @@ async def recall_webhook(request: Request):
 
             if action == "join":
                 participants_manager.add(participant_data)
-                try:
-                    model.participants = list(participants_manager.list)
-                except Exception:
-                    pass
                 logger.info(f"Total participants: {len(participants_manager.list)}")
                 bot_context.print_active_bot()
 
@@ -383,10 +432,6 @@ async def recall_webhook(request: Request):
 
             if participant_name.lower() != "scooby":
                 participants_manager.mark_left(participant_id)
-                try:
-                    model.participants = list(participants_manager.list)
-                except Exception:
-                    pass
                 p = participants_manager.get(participant_id)
                 if p:
                     logger.info(f"Participant left: {p['name']}")

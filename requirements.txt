@@ -1,6 +1,5 @@
 aiofiles
 fastapi
-google-genai
 httpx
 Jinja2
 neo4j
@@ -8,4 +7,8 @@ pinecone
 pydantic
 python-dotenv
 uvicorn[standard]
-python-dotenv
+langchain==0.3.0
+langchain-openai==0.2.0
+langchain-core==0.3.0
+openai>=1.0.0
+tiktoken
