@@ -1,12 +1,20 @@
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 import os
 import logging
+import base64
+import io
+from typing import Set, Dict
+
+from PIL import Image
+import imagehash
+
 from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
 from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
 from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
 from app.service.transcript_ingestion import TranscriptIngestion
+from app.service.screenshare_storage import ScreenshareStorage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -24,6 +32,11 @@ current_meeting_url = None
 transcripts_enabled = False
 current_x_org_name = None
 processed_audio_segments = set()
+active_screensharers: Set[str] = set()
+
+# Per participant state for video frame handling
+participant_frame_hashes: Dict[str, Set[str]] = {}
+participant_last_ts: Dict[str, float] = {}
 
 SCOOBY_VARIANTS = [
     "scooby", "scoobie", "skuby", "skubi", "scubi",
@@ -131,9 +144,111 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info(f"WebSocket {connection_id} disconnected")
         cm.remove_connection(connection_id)
+
+
+@router.websocket("/api/ws/recall-realtime")
+async def recall_realtime_websocket(websocket: WebSocket):
+    await websocket.accept()
+
+    storage = ScreenshareStorage()
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            event_type = message.get("event")
+            data = message.get("data", {})
+
+            bot_info = data.get("bot", {}) or {}
+            bot_id = bot_info.get("id")
+
+            if current_bot_id is None or bot_id != current_bot_id:
+                continue
+
+            inner = data.get("data", {}) or {}
+
+            if event_type == "participant_events.screenshare_on":
+                participant = inner.get("participant", {}) or {}
+                participant_id = str(participant.get("id"))
+                if participant_id:
+                    active_screensharers.add(participant_id)
+
+            elif event_type == "participant_events.screenshare_off":
+                participant = inner.get("participant", {}) or {}
+                participant_id = str(participant.get("id"))
+                if participant_id and participant_id in active_screensharers:
+                    active_screensharers.discard(participant_id)
+
+            elif event_type == "video_separate_png.data":
+                frame_type = inner.get("type")
+                if frame_type != "screenshare":
+                    continue
+
+                participant = inner.get("participant", {}) or {}
+                participant_id = str(participant.get("id"))
+                participant_name = participant.get("name")
+
+                if not participant_id or participant_id not in active_screensharers:
+                    continue
+
+                timestamp = inner.get("timestamp", {}) or {}
+                ts_absolute = timestamp.get("absolute")
+                ts_relative = timestamp.get("relative")
+                buffer_b64 = inner.get("buffer")
+
+                if not buffer_b64:
+                    continue
+
+                if not current_x_org_name or not current_bot_id:
+                    continue
+
+                # Downsample FPS to ~1 frame every 2 seconds per participant
+                key = f"{current_bot_id}:{participant_id}"
+                if ts_relative is not None:
+                    last_ts = participant_last_ts.get(key)
+                    if last_ts is not None and (ts_relative - last_ts) < 2.0:
+                        # Skip frames that are too close in time
+                        continue
+
+                try:
+                    # Decode frame bytes for perceptual hashing
+                    frame_bytes = base64.b64decode(buffer_b64)
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 frame: {e}")
+                    continue
+
+                # Initialize hash set for this participant+bot
+                hashes = participant_frame_hashes.setdefault(key, set())
+
+                try:
+                    image = Image.open(io.BytesIO(frame_bytes))
+                    img_hash = str(imagehash.phash(image))
+
+                    if img_hash in hashes:
+                        logger.info("[screenshare] Duplicate frame detected (skipped)")
+                        continue
+
+                    hashes.add(img_hash)
+                    if ts_relative is not None:
+                        participant_last_ts[key] = ts_relative
+
+                    # Save via ScreenshareStorage; it will decode base64 again, which is fine
+                    file_path = storage.save_png_frame(
+                        org_name=current_x_org_name,
+                        bot_id=current_bot_id,
+                        participant_id=participant_id,
+                        participant_name=participant_name,
+                        timestamp_absolute=ts_absolute,
+                        timestamp_relative=ts_relative,
+                        image_base64=buffer_b64,
+                    )
+                    logger.info(f"Saved UNIQUE screenshare frame to {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed uniqueness/FPS check or save: {e}")
+
+    except WebSocketDisconnect:
+        logger.info("Recall realtime websocket disconnected")
     except Exception as e:
-        logger.exception(f"WebSocket error for {connection_id}: {e}")
-        cm.remove_connection(connection_id)
+        logger.exception(f"Error in Recall realtime websocket: {e}")
 
 
 @router.post("/api/webhook/recall/bot-status")

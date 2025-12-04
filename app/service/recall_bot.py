@@ -23,16 +23,27 @@ class RecallBot():
             "meeting_url": meeting_url,
             "bot_name": bot_name,
             "recording_config": {
+                "video_separate_png": {},
+                "video_mixed_layout": "gallery_view_v2",
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/api/webhook/recall",
+                        "url": "https://expressible-overprovidently-devon.ngrok-free.dev/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
                             "participant_events.leave",
                         ]
-                    }
+                    },
+                    {
+                        "type": "websocket",
+                        "url": "wss://expressible-overprovidently-devon.ngrok-free.dev/api/ws/recall-realtime",
+                        "events": [
+                            "participant_events.screenshare_on",
+                            "participant_events.screenshare_off",
+                            "video_separate_png.data",
+                        ],
+                    },
                 ],
                 "transcript": {
                     "provider": {
@@ -44,7 +55,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://pulse-dev.scooby.getpulseinsights.ai/"
+                        "url": "https://expressible-overprovidently-devon.ngrok-free.dev/"
                     }
                 }
             },

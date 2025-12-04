@@ -9,3 +9,5 @@ pydantic
 python-dotenv
 uvicorn[standard]
 python-dotenv
+Pillow
+ImageHash
