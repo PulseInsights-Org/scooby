@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 import os
 import logging
+from typing import Optional, Set
+
 from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
 from app.service.participants import ParticipantsManager
@@ -10,7 +12,7 @@ from app.service.transcript_buffer import TranscriptBuffer
 from app.service.summarization_service import SummarizationService
 from app.service.summary_storage import SummaryStorage
 from app.core.config import get_config
-from typing import Optional
+from app.service.screenshare_storage import ScreenshareStorage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ current_meeting_url = None
 transcripts_enabled = False
 current_x_org_name = None
 processed_audio_segments = set()
+active_screensharers: Set[str] = set()
 
 config = get_config()
 transcript_buffer: Optional[TranscriptBuffer] = None
@@ -177,9 +180,81 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info(f"WebSocket {connection_id} disconnected")
         cm.remove_connection(connection_id)
+
+
+@router.websocket("/api/ws/recall-realtime")
+async def recall_realtime_websocket(websocket: WebSocket):
+    await websocket.accept()
+
+    storage = ScreenshareStorage()
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            event_type = message.get("event")
+            data = message.get("data", {})
+
+            bot_info = data.get("bot", {}) or {}
+            bot_id = bot_info.get("id")
+
+            if current_bot_id is None or bot_id != current_bot_id:
+                continue
+
+            inner = data.get("data", {}) or {}
+
+            if event_type == "participant_events.screenshare_on":
+                participant = inner.get("participant", {}) or {}
+                participant_id = str(participant.get("id"))
+                if participant_id:
+                    active_screensharers.add(participant_id)
+
+            elif event_type == "participant_events.screenshare_off":
+                participant = inner.get("participant", {}) or {}
+                participant_id = str(participant.get("id"))
+                if participant_id and participant_id in active_screensharers:
+                    active_screensharers.discard(participant_id)
+
+            elif event_type == "video_separate_png.data":
+                frame_type = inner.get("type")
+                if frame_type != "screenshare":
+                    continue
+
+                participant = inner.get("participant", {}) or {}
+                participant_id = str(participant.get("id"))
+                participant_name = participant.get("name")
+
+                if not participant_id or participant_id not in active_screensharers:
+                    continue
+
+                timestamp = inner.get("timestamp", {}) or {}
+                ts_absolute = timestamp.get("absolute")
+                ts_relative = timestamp.get("relative")
+                buffer_b64 = inner.get("buffer")
+
+                if not buffer_b64:
+                    continue
+
+                if not current_x_org_name or not current_bot_id:
+                    continue
+
+                try:
+                    file_path = storage.save_png_frame(
+                        org_name=current_x_org_name,
+                        bot_id=current_bot_id,
+                        participant_id=participant_id,
+                        participant_name=participant_name,
+                        timestamp_absolute=ts_absolute,
+                        timestamp_relative=ts_relative,
+                        image_base64=buffer_b64,
+                    )
+                    logger.info(f"Saved screenshare frame to {file_path}")
+                except Exception as e:
+                    logger.exception(f"Failed to save screenshare frame: {e}")
+
+    except WebSocketDisconnect:
+        logger.info("Recall realtime websocket disconnected")
     except Exception as e:
-        logger.exception(f"WebSocket error for {connection_id}: {e}")
-        cm.remove_connection(connection_id)
+        logger.exception(f"Error in Recall realtime websocket: {e}")
 
 
 @router.post("/api/webhook/recall/bot-status")
