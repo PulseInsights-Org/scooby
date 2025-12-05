@@ -2,7 +2,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 import logging
 import asyncio
 import json
@@ -13,24 +13,25 @@ from app.service.Pinecone_Store import PineconeStore
 
 logger = logging.getLogger(__name__)
 
-
 class EventExtraction(BaseModel):
     """Single extracted event from transcript"""
     timestamp: str = Field(description="Time range in format '00:15-00:18'")
     event: str = Field(description="Detailed description of what happened/was discussed")
     person: str = Field(description="Person who performed the action or led the discussion")
-    is_issue: Optional[bool] = Field(
-        default=None,
-        description="True if this event contains an issue/error/blocker/logs; otherwise False or null",
+    event_type: Literal["issue-related", "MoM-event", "general-event"] = Field(
+        default="general-event",
+        description=(
+            "Type of event: 'issue-related' for technical issues/blockers/logs, "
+            "'MoM-event' for events referring to previous meeting context, "
+            "or 'general-event' for everything else."
+        ),
     )
-
 
 class MeetingOutput(BaseModel):
     """Structured output containing events and updated summary"""
     events: List[EventExtraction] = Field(description="List of extracted events from this transcript segment")
     summary: str = Field(description="Complete updated meeting summary (MOM style)")
     suggestion: Optional[str] = Field(default=None, description="Optional suggestion generated using issue knowledge base; may be null")
-
 
 class SummarizationService:
     """
@@ -41,24 +42,49 @@ class SummarizationService:
     def __init__(self):
         self.config = get_config()
         # ------------------------------------------------------------
-        # 1️⃣ Load Pinecone Store 
+        # 1️⃣ Load Pinecone Stores (issues + MoM)
         # ------------------------------------------------------------
-        index_name = "global-issues"  
-        self.pinecone_store: Optional[PineconeStore] = None
+        issues_index_name = "global-issues"
+        mom_index_name = "MoM-index"
+
+        self.issues_pinecone_store: Optional[PineconeStore] = None
+        self.mom_pinecone_store: Optional[PineconeStore] = None
+
         try:
-            self.pinecone_store = PineconeStore(index_name=index_name)
-            logger.info(f"Initialized PineconeStore for issues index: {index_name}")
+            self.issues_pinecone_store = PineconeStore(index_name=issues_index_name)
+            logger.info(f"Initialized PineconeStore for issues index: {issues_index_name}")
         except Exception as e:
-            logger.error(f"Failed to initialize PineconeStore: {e}")
+            logger.error(f"Failed to initialize issues PineconeStore: {e}")
+
+        try:
+            self.mom_pinecone_store = PineconeStore(index_name=mom_index_name)
+            logger.info(f"Initialized PineconeStore for MoM index: {mom_index_name}")
+        except Exception as e:
+            logger.error(f"Failed to initialize MoM PineconeStore: {e}")
 
         # ------------------------------------------------------------
-        # 2️⃣ Define OpenAI Tool schema 
+        # 2️⃣ Define OpenAI Tool schemas (issues + MoM)
         # ------------------------------------------------------------
-        self.search_tool_def = {
+        self.issue_search_tool_def = {
             "type": "function",
             "function": {
-                "name": "search_in_issues_index",
-                "description": "Search similar issues in Pinecone index for troubleshooting and suggestions",
+                "name": "search_issues_knowledge_base",
+                "description": "Search similar technical issues and troubleshooting steps in the issues knowledge base (Pinecone index)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+
+        self.mom_search_tool_def = {
+            "type": "function",
+            "function": {
+                "name": "search_mom_meeting_index",
+                "description": "Search previous meeting MoM index (Pinecone) for context, decisions, and follow-ups related to the current discussion",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -70,14 +96,14 @@ class SummarizationService:
         }
 
         # ------------------------------------------------------------
-        # 3️⃣ Initialize LLM (event extraction + summary + suggestion)
+        # 3️⃣ Initialize LLM (event extraction + summary + suggestions)
         # ------------------------------------------------------------
         self.llm = ChatOpenAI(
             model=self.config.model_name,
             temperature=self.config.temperature,
             max_tokens=1500,
             openai_api_key=self.config.openai_api_key,
-            tools=[self.search_tool_def],
+            tools=[self.issue_search_tool_def, self.mom_search_tool_def],
             tool_choice="auto",
         )
 
@@ -109,27 +135,29 @@ class SummarizationService:
    - Focus on: key topics, decisions made, action items, next steps
    - Remove redundancy - integrate new info into existing context
 
-3. **Classify Issue Events**
-   - For each event, set `is_issue = true` ONLY IF it clearly contains:
-     - errors, issues, warnings, logs
-     - blockers or being blocked
-     - integration failures or API issues
-     - debugging / troubleshooting topics
-   - Otherwise, set `is_issue = false` or leave it null.
+3. **Classify Event Type**
+   - For each event, set `event_type` to one of:
+     - `"issue-related"` for technical issues/blockers/logs, integration failures, debugging/troubleshooting topics
+     - `"MoM-event"` for events that clearly refer to previous meeting context (e.g. what was decided last time, follow-ups from earlier meetings)
+     - `"general-event"` for everything else
 
-4. **Suggestion Generation (ONLY if issue events exist)**
-   - If at least one event has `is_issue = true`:
-       - Conceptually call the tool `search_in_issues_index` using the issue event description as the query.
-       - Use those retrieved similar issues/solutions to generate a concrete, actionable suggestion.
-       - Put the final suggestion text in the `suggestion` field of the output.
-   - If there are no issue events, set `suggestion = null`.
+4. **Issue Knowledge Base Suggestions (ONLY if issue-related events exist)**
+   - If at least one event has `event_type = "issue-related"`:
+      - Conceptually search the issues knowledge base using the issue event description as the query.
+      - Use the retrieved similar issues/solutions to generate a concrete, actionable suggestion.
+      - Put the final suggestion text in the `suggestion` field of the output.
+
+5. **MoM / Previous Meeting Context Suggestions (ONLY if MoM-events exist)**
+   - If at least one event has `event_type = "MoM-event"`:
+      - Conceptually search the previous meeting MoM index using the event description as the query.
+      - Use the retrieved previous-meeting context to refine the event description and update the global summary accordingly.
 
 Guidelines:
 - Events: Be specific about WHO did/said WHAT
 - Summary: Professional MOM format, not conversational
 - Maintain continuity across the entire meeting
 - Preserve important details (dates, numbers, names, commitments)
-- Suggestions must be meaningful, practical and tied to the described issues."""
+ - Suggestions must be meaningful, practical and tied to the described issues or MoM-related context."""
 
     def _build_input(
         self,
@@ -217,8 +245,61 @@ Guidelines:
                 if "events" not in result or "summary" not in result:
                     raise ValueError(f"Missing required keys in result: {result.keys()}")
 
-                # suggestion is optional; if model does not return it, default to None
-                if "suggestion" not in result:
+                events = result.get("events", []) or []
+                suggestion_parts: List[str] = []
+
+                # -----------------------------
+                # Issue-related suggestions
+                # -----------------------------
+                if self.issues_pinecone_store and events:
+                    issue_events = [e for e in events if e.get("event_type") == "issue-related"]
+                    if issue_events:
+                        try:
+                            issue_query = issue_events[0].get("event") or ""
+                            if issue_query:
+                                matches = self.issues_pinecone_store.search_similar_issues(issue_query)
+                                if matches:
+                                    lines = []
+                                    for m in matches:
+                                        md = m.get("metadata", {}) or {}
+                                        title = md.get("title") or md.get("summary") or md.get("description") or ""
+                                        if title:
+                                            lines.append(f"- {title}")
+                                    if lines:
+                                        suggestion_parts.append(
+                                            "Issue-related suggestions based on similar past issues:\n" + "\n".join(lines)
+                                        )
+                        except Exception as e:
+                            logger.error(f"Error querying issues Pinecone index: {e}")
+
+                # -----------------------------
+                # MoM / previous meeting context suggestions
+                # -----------------------------
+                if self.mom_pinecone_store and events:
+                    mom_events = [e for e in events if e.get("event_type") == "MoM-event"]
+                    if mom_events:
+                        try:
+                            mom_query = mom_events[0].get("event") or ""
+                            if mom_query:
+                                matches = self.mom_pinecone_store.search_similar_issues(mom_query)
+                                if matches:
+                                    lines = []
+                                    for m in matches:
+                                        md = m.get("metadata", {}) or {}
+                                        context = md.get("summary") or md.get("notes") or md.get("decision") or ""
+                                        if context:
+                                            lines.append(f"- {context}")
+                                    if lines:
+                                        suggestion_parts.append(
+                                            "Previous meeting context and follow-ups:\n" + "\n".join(lines)
+                                        )
+                        except Exception as e:
+                            logger.error(f"Error querying MoM Pinecone index: {e}")
+
+                # suggestion is optional; if we built any suggestion parts, join them; otherwise default to None
+                if suggestion_parts:
+                    result["suggestion"] = "\n\n".join(suggestion_parts)
+                elif "suggestion" not in result:
                     result["suggestion"] = None
 
                 logger.info(
