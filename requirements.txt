@@ -11,3 +11,4 @@ uvicorn[standard]
 python-dotenv
 Pillow
 ImageHash
+redis

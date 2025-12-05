@@ -14,7 +14,7 @@ from app.service.gemini_live import GeminiLive
 from app.service.participants import ParticipantsManager
 from app.core.utils import TranscriptWriter, BotContext, InactivityMonitor
 from app.service.transcript_ingestion import TranscriptIngestion
-from app.service.screenshare_storage import ScreenshareStorage
+from app.service.screenshare_buffer import ScreenshareRedisBuffer
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ cm = ConnectionManager()
 rb = RecallBot()
 participants_manager = ParticipantsManager()
 bot_context = BotContext()
+screenshare_buffer = ScreenshareRedisBuffer()
 
 current_bot_id = None
 current_meeting_url = None
@@ -150,8 +151,6 @@ async def websocket_endpoint(websocket: WebSocket):
 async def recall_realtime_websocket(websocket: WebSocket):
     await websocket.accept()
 
-    storage = ScreenshareStorage()
-
     try:
         while True:
             message = await websocket.receive_json()
@@ -231,19 +230,20 @@ async def recall_realtime_websocket(websocket: WebSocket):
                     if ts_relative is not None:
                         participant_last_ts[key] = ts_relative
 
-                    # Save via ScreenshareStorage; it will decode base64 again, which is fine
-                    file_path = storage.save_png_frame(
+                    # Push frame into Redis-backed buffer (base64-encoded)
+                    await screenshare_buffer.push_frame(
                         org_name=current_x_org_name,
                         bot_id=current_bot_id,
                         participant_id=participant_id,
                         participant_name=participant_name,
-                        timestamp_absolute=ts_absolute,
-                        timestamp_relative=ts_relative,
+                        ts_absolute=ts_absolute,
+                        ts_relative=ts_relative,
+                        img_hash=img_hash,
                         image_base64=buffer_b64,
                     )
-                    logger.info(f"Saved UNIQUE screenshare frame to {file_path}")
+                    logger.info("Saved UNIQUE screenshare frame to Redis buffer")
                 except Exception as e:
-                    logger.warning(f"Failed uniqueness/FPS check or save: {e}")
+                    logger.warning(f"Failed uniqueness/FPS check or buffer push: {e}")
 
     except WebSocketDisconnect:
         logger.info("Recall realtime websocket disconnected")
