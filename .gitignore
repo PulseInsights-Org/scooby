@@ -1,4 +1,5 @@
 __pycache__
 .env
 transcripts
-screenshares
+app/screenshares/
+!app/service/screenshare_storage.py

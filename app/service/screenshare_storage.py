@@ -1,23 +1,29 @@
 import os
 import base64
-from datetime import datetime
 from typing import Optional
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # points to app/
-SCREENSHARES_DIR = os.path.join(BASE_DIR, "screenshares")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCREENSHARES_ROOT = os.path.join(BASE_DIR, "screenshares")
 
 
 class ScreenshareStorage:
-    """Utility for storing screenshare PNG frames on disk.
 
-    Frames are stored under:
-        screenshares/<org_name>/<bot_id>/<participant_id>/
-    with filenames that include timestamps and participant name for debugging.
-    """
+    def __init__(self) -> None:
+        self.base_dir = BASE_DIR
+        self.root_dir = SCREENSHARES_ROOT
 
-    def __init__(self, base_dir: Optional[str] = None) -> None:
-        self.base_dir = base_dir or SCREENSHARES_DIR
+    def _sanitize(self, text: Optional[str]) -> str:
+        if not text:
+            return "unknown"
+        return "".join(ch.lower() if ch.isalnum() else "_" for ch in text)[:64]
+
+    def ensure_meeting_dir(self, org_name: str, bot_id: str) -> str:
+        org_safe = self._sanitize(org_name)
+        meeting_safe = self._sanitize(bot_id)
+        path = os.path.join(self.root_dir, org_safe, meeting_safe)
+        os.makedirs(path, exist_ok=True)
+        return path
 
     def save_png_frame(
         self,
@@ -26,45 +32,32 @@ class ScreenshareStorage:
         bot_id: str,
         participant_id: str,
         participant_name: Optional[str],
-        timestamp_absolute: Optional[float],
+        timestamp_absolute: Optional[str],
         timestamp_relative: Optional[float],
         image_base64: str,
     ) -> str:
-        """Decode a base64 PNG frame and save it to disk.
+        meeting_dir = self.ensure_meeting_dir(org_name, bot_id)
 
-        Returns the full file path where the frame was stored.
-        """
-        # Build directory path
-        org_safe = org_name or "unknown_org"
-        bot_safe = bot_id or "unknown_bot"
-        participant_safe = participant_id or "unknown_participant"
+        if timestamp_absolute:
+            ts = (
+                timestamp_absolute
+                .replace(":", "")
+                .replace("-", "")
+                .replace(".", "_")
+                .replace("Z", "z")
+            )
+        else:
+            rel_str = f"{timestamp_relative:.3f}" if timestamp_relative is not None else "0.000"
+            ts = f"rel_{rel_str.replace('.', '_')}"
 
-        target_dir = os.path.join(
-            self.base_dir,
-            org_safe,
-            bot_safe,
-            participant_safe,
-        )
-        os.makedirs(target_dir, exist_ok=True)
+        participant_safe = self._sanitize(participant_name or str(participant_id))
+        participant_id_safe = self._sanitize(str(participant_id))
 
-        # Build filename with timestamps
-        ts_abs = f"{timestamp_absolute:.3f}" if isinstance(timestamp_absolute, (int, float)) else "na"
-        ts_rel = f"{timestamp_relative:.3f}" if isinstance(timestamp_relative, (int, float)) else "na"
+        filename = f"{participant_safe}_{participant_id_safe}_{ts}.png"
+        file_path = os.path.join(meeting_dir, filename)
 
-        now_str = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
-        name_part = (participant_name or "participant").replace(" ", "_")
-
-        filename = f"frame_{name_part}_abs-{ts_abs}_rel-{ts_rel}_{now_str}.png"
-        file_path = os.path.join(target_dir, filename)
-
-        # Decode and write PNG bytes
-        try:
-            png_bytes = base64.b64decode(image_base64)
-        except Exception:
-            # If decoding fails, still raise so caller can log the issue
-            raise
-
+        image_bytes = base64.b64decode(image_base64)
         with open(file_path, "wb") as f:
-            f.write(png_bytes)
+            f.write(image_bytes)
 
         return file_path
