@@ -19,6 +19,10 @@ class SummarizationConfig(BaseModel):
     temperature: float = 0.3  # Lower for consistent summaries
     max_tokens: int = 500  # Summary output limit
 
+    # Vector / search settings
+    pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
+    pinecone_index_name: str = os.getenv("PINECONE_ISSUES_INDEX_NAME", "")
+
     # Storage settings
     summaries_dir: str = "summaries"
     transcripts_dir: str = "transcripts"

@@ -6,8 +6,10 @@ from typing import List, Optional, Dict, Any
 import logging
 import asyncio
 import json
+import os
 from app.core.config import get_config
 from app.service.transcript_buffer import TranscriptItem
+from app.service.Pinecone_Store import PineconeStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +19,17 @@ class EventExtraction(BaseModel):
     timestamp: str = Field(description="Time range in format '00:15-00:18'")
     event: str = Field(description="Detailed description of what happened/was discussed")
     person: str = Field(description="Person who performed the action or led the discussion")
+    is_issue: Optional[bool] = Field(
+        default=None,
+        description="True if this event contains an issue/error/blocker/logs; otherwise False or null",
+    )
 
 
 class MeetingOutput(BaseModel):
     """Structured output containing events and updated summary"""
     events: List[EventExtraction] = Field(description="List of extracted events from this transcript segment")
     summary: str = Field(description="Complete updated meeting summary (MOM style)")
+    suggestion: Optional[str] = Field(default=None, description="Optional suggestion generated using issue knowledge base; may be null")
 
 
 class SummarizationService:
@@ -33,12 +40,45 @@ class SummarizationService:
 
     def __init__(self):
         self.config = get_config()
+        # ------------------------------------------------------------
+        # 1️⃣ Load Pinecone Store 
+        # ------------------------------------------------------------
+        index_name = "global-issues"  
+        self.pinecone_store: Optional[PineconeStore] = None
+        try:
+            self.pinecone_store = PineconeStore(index_name=index_name)
+            logger.info(f"Initialized PineconeStore for issues index: {index_name}")
+        except Exception as e:
+            logger.error(f"Failed to initialize PineconeStore: {e}")
 
+        # ------------------------------------------------------------
+        # 2️⃣ Define OpenAI Tool schema 
+        # ------------------------------------------------------------
+        self.search_tool_def = {
+            "type": "function",
+            "function": {
+                "name": "search_in_issues_index",
+                "description": "Search similar issues in Pinecone index for troubleshooting and suggestions",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+
+        # ------------------------------------------------------------
+        # 3️⃣ Initialize LLM (event extraction + summary + suggestion)
+        # ------------------------------------------------------------
         self.llm = ChatOpenAI(
             model=self.config.model_name,
             temperature=self.config.temperature,
-            max_tokens=1500, 
-            openai_api_key=self.config.openai_api_key
+            max_tokens=1500,
+            openai_api_key=self.config.openai_api_key,
+            tools=[self.search_tool_def],
+            tool_choice="auto",
         )
 
         self.output_parser = JsonOutputParser(pydantic_object=MeetingOutput)
@@ -50,7 +90,7 @@ class SummarizationService:
 
         self.chain = self.prompt | self.llm | self.output_parser
 
-        logger.info(f"Initialized SummarizationService with model: {self.config.model_name}")
+        logger.info(f"Initialized SummarizationService with model: {self.config.model_name} and tool-enabled LLM")
 
     def _get_system_prompt(self) -> str:
         """System prompt for event extraction and summarization"""
@@ -69,11 +109,27 @@ class SummarizationService:
    - Focus on: key topics, decisions made, action items, next steps
    - Remove redundancy - integrate new info into existing context
 
+3. **Classify Issue Events**
+   - For each event, set `is_issue = true` ONLY IF it clearly contains:
+     - errors, issues, warnings, logs
+     - blockers or being blocked
+     - integration failures or API issues
+     - debugging / troubleshooting topics
+   - Otherwise, set `is_issue = false` or leave it null.
+
+4. **Suggestion Generation (ONLY if issue events exist)**
+   - If at least one event has `is_issue = true`:
+       - Conceptually call the tool `search_in_issues_index` using the issue event description as the query.
+       - Use those retrieved similar issues/solutions to generate a concrete, actionable suggestion.
+       - Put the final suggestion text in the `suggestion` field of the output.
+   - If there are no issue events, set `suggestion = null`.
+
 Guidelines:
 - Events: Be specific about WHO did/said WHAT
 - Summary: Professional MOM format, not conversational
 - Maintain continuity across the entire meeting
-- Preserve important details (dates, numbers, names, commitments)"""
+- Preserve important details (dates, numbers, names, commitments)
+- Suggestions must be meaningful, practical and tied to the described issues."""
 
     def _build_input(
         self,
@@ -140,7 +196,7 @@ Guidelines:
             try:
                 if not transcript_items:
                     logger.warning("No transcript items to process")
-                    return {"events": [], "summary": previous_summary or ""}
+                    return {"events": [], "summary": previous_summary or "", "suggestion": None}
 
                 input_text = self._build_input(transcript_items, previous_summary)
 
@@ -149,10 +205,10 @@ Guidelines:
 
                 format_instructions = self.output_parser.get_format_instructions()
 
-                # Invoke chain
+                # Invoke chain (LLM handles events, summary, and suggestion in one pass)
                 result = await self.chain.ainvoke({
                     "input": input_text,
-                    "format_instructions": format_instructions
+                    "format_instructions": format_instructions,
                 })
 
                 if not isinstance(result, dict):
@@ -161,7 +217,16 @@ Guidelines:
                 if "events" not in result or "summary" not in result:
                     raise ValueError(f"Missing required keys in result: {result.keys()}")
 
-                logger.info(f"Extracted {len(result['events'])} events, summary length: {len(result['summary'])} chars")
+                # suggestion is optional; if model does not return it, default to None
+                if "suggestion" not in result:
+                    result["suggestion"] = None
+
+                logger.info(
+                    f"Extracted {len(result['events'])} events, "
+                    f"summary length: {len(result['summary'])} chars, "
+                    f"suggestion present: {result['suggestion'] is not None}"
+                )
+
                 return result
 
             except json.JSONDecodeError as e:
@@ -208,5 +273,6 @@ Guidelines:
 
         return {
             "events": events,
-            "summary": updated_summary.strip()
+            "summary": updated_summary.strip(),
+            "suggestion": None,
         }
