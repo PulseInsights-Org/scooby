@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 import os
 import logging
-from typing import Optional, Set
+import base64
+import io
+from typing import Optional, Set, Dict
+
+from PIL import Image
+import imagehash
 
 from app.service.recall_bot import RecallBot
 from app.core.manage_connections import ConnectionManager
@@ -12,7 +17,7 @@ from app.service.transcript_buffer import TranscriptBuffer
 from app.service.summarization_service import SummarizationService
 from app.service.summary_storage import SummaryStorage
 from app.core.config import get_config
-from app.service.screenshare_storage import ScreenshareStorage
+from app.service.screenshare_buffer import ScreenshareRedisBuffer
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -24,6 +29,7 @@ cm = ConnectionManager()
 rb = RecallBot()
 participants_manager = ParticipantsManager()
 bot_context = BotContext()
+screenshare_buffer = ScreenshareRedisBuffer()
 
 current_bot_id = None
 current_meeting_url = None
@@ -31,6 +37,10 @@ transcripts_enabled = False
 current_x_org_name = None
 processed_audio_segments = set()
 active_screensharers: Set[str] = set()
+
+# Per participant state for video frame handling (for FPS/downsampling + dedupe)
+participant_frame_hashes: Dict[str, Set[str]] = {}
+participant_last_ts: Dict[str, float] = {}
 
 config = get_config()
 transcript_buffer: Optional[TranscriptBuffer] = None
@@ -186,8 +196,6 @@ async def websocket_endpoint(websocket: WebSocket):
 async def recall_realtime_websocket(websocket: WebSocket):
     await websocket.accept()
 
-    storage = ScreenshareStorage()
-
     try:
         while True:
             message = await websocket.receive_json()
@@ -237,19 +245,50 @@ async def recall_realtime_websocket(websocket: WebSocket):
                 if not current_x_org_name or not current_bot_id:
                     continue
 
+                # Downsample FPS to ~1 frame every 2 seconds per participant
+                key = f"{current_bot_id}:{participant_id}"
+                if ts_relative is not None:
+                    last_ts = participant_last_ts.get(key)
+                    if last_ts is not None and (ts_relative - last_ts) < 2.0:
+                        # Skip frames that are too close in time
+                        continue
+
                 try:
-                    file_path = storage.save_png_frame(
+                    # Decode frame bytes for perceptual hashing
+                    frame_bytes = base64.b64decode(buffer_b64)
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 frame: {e}")
+                    continue
+
+                # Initialize hash set for this participant+bot
+                hashes = participant_frame_hashes.setdefault(key, set())
+
+                try:
+                    image = Image.open(io.BytesIO(frame_bytes))
+                    img_hash = str(imagehash.phash(image))
+
+                    if img_hash in hashes:
+                        logger.info("[screenshare] Duplicate frame detected (skipped)")
+                        continue
+
+                    hashes.add(img_hash)
+                    if ts_relative is not None:
+                        participant_last_ts[key] = ts_relative
+
+                    # Push frame into Redis-backed buffer (base64-encoded)
+                    await screenshare_buffer.push_frame(
                         org_name=current_x_org_name,
                         bot_id=current_bot_id,
                         participant_id=participant_id,
                         participant_name=participant_name,
-                        timestamp_absolute=ts_absolute,
-                        timestamp_relative=ts_relative,
+                        ts_absolute=ts_absolute,
+                        ts_relative=ts_relative,
+                        img_hash=img_hash,
                         image_base64=buffer_b64,
                     )
-                    logger.info(f"Saved screenshare frame to {file_path}")
+                    logger.info("Saved UNIQUE screenshare frame to Redis buffer")
                 except Exception as e:
-                    logger.exception(f"Failed to save screenshare frame: {e}")
+                    logger.warning(f"Failed uniqueness/FPS check or buffer push: {e}")
 
     except WebSocketDisconnect:
         logger.info("Recall realtime websocket disconnected")

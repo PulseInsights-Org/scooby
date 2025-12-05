@@ -18,23 +18,17 @@ class RecallBot():
         recall_api_key = os.getenv("RECALL_API_KEY")
         if not recall_api_key:
             raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
-
-        public_base_url = os.getenv("PUBLIC_BASE_URL")
-        if not public_base_url:
-            public_base_url = "https://doleritic-marsha-unjacketed.ngrok-free.dev"
-
-        webhook_url = f"{public_base_url}/api/webhook/recall"
-        websocket_url = f"{public_base_url}/api/ws/recall-realtime"
-        webpage_url = public_base_url
-
+        
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
             "recording_config": {
+                "video_separate_png": {},
+                "video_mixed_layout": "gallery_view_v2",
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": webhook_url,
+                        "url": "https://expressible-overprovidently-devon.ngrok-free.dev/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
@@ -43,7 +37,7 @@ class RecallBot():
                     },
                     {
                         "type": "websocket",
-                        "url": websocket_url,
+                        "url": "wss://expressible-overprovidently-devon.ngrok-free.dev/api/ws/recall-realtime",
                         "events": [
                             "participant_events.screenshare_on",
                             "participant_events.screenshare_off",
@@ -53,10 +47,7 @@ class RecallBot():
                 ],
                 "transcript": {
                     "provider": {
-                        "recallai_streaming": {
-                             "mode": "prioritize_low_latency",
-                             "language_code": "en",
-                        }
+                        "meeting_captions": {}
                     }
                 }
             },
@@ -64,7 +55,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": webpage_url
+                        "url": "https://expressible-overprovidently-devon.ngrok-free.dev/"
                     }
                 }
             },
