@@ -4,7 +4,7 @@ from langchain_openai import OpenAIEmbeddings
 from app.core.config import get_config
 
 
-class PineconeStore:
+class VectoreStore:
     def __init__(self, index_name: str, embedding_model: str = "text-embedding-3-small"):
         config = get_config()
         self.pc = Pinecone(api_key=config.pinecone_api_key)

@@ -1,6 +1,7 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
 import logging
@@ -9,7 +10,7 @@ import json
 import os
 from app.core.config import get_config
 from app.service.transcript_buffer import TranscriptItem
-from app.service.Pinecone_Store import PineconeStore
+from app.service.Pinecone_Store import VectoreStore
 
 logger = logging.getLogger(__name__)
 
@@ -45,67 +46,87 @@ class SummarizationService:
         # 1️⃣ Load Pinecone Stores (issues + MoM)
         # ------------------------------------------------------------
         issues_index_name = "global-issues"
-        mom_index_name = "MoM-index"
+        mom_index_name = "meeting-summaries"
 
-        self.issues_pinecone_store: Optional[PineconeStore] = None
-        self.mom_pinecone_store: Optional[PineconeStore] = None
+        self.issues_pinecone_store: Optional[VectoreStore] = None
+        self.mom_pinecone_store: Optional[VectoreStore] = None
 
         try:
-            self.issues_pinecone_store = PineconeStore(index_name=issues_index_name)
-            logger.info(f"Initialized PineconeStore for issues index: {issues_index_name}")
+            self.issues_pinecone_store = VectoreStore(index_name=issues_index_name)
+            logger.info(f"Initialized VectoreStore for issues index: {issues_index_name}")
         except Exception as e:
             logger.error(f"Failed to initialize issues PineconeStore: {e}")
 
         try:
-            self.mom_pinecone_store = PineconeStore(index_name=mom_index_name)
-            logger.info(f"Initialized PineconeStore for MoM index: {mom_index_name}")
+            self.mom_pinecone_store = VectoreStore(index_name=mom_index_name)
+            logger.info(f"Initialized VectoreStore for MoM index: {mom_index_name}")
         except Exception as e:
             logger.error(f"Failed to initialize MoM PineconeStore: {e}")
 
         # ------------------------------------------------------------
-        # 2️⃣ Define OpenAI Tool schemas (issues + MoM)
+        # 2️⃣ Define LangChain tools (issues + MoM) using OpenAI tool calling
         # ------------------------------------------------------------
-        self.issue_search_tool_def = {
-            "type": "function",
-            "function": {
-                "name": "search_issues_knowledge_base",
-                "description": "Search similar technical issues and troubleshooting steps in the issues knowledge base (Pinecone index)",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"}
-                    },
-                    "required": ["query"],
-                },
-            },
-        }
 
-        self.mom_search_tool_def = {
-            "type": "function",
-            "function": {
-                "name": "search_mom_meeting_index",
-                "description": "Search previous meeting MoM index (Pinecone) for context, decisions, and follow-ups related to the current discussion",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"}
-                    },
-                    "required": ["query"],
-                },
-            },
-        }
+        @tool
+        def search_issues_knowledge_base(query: str) -> str:
+            """Search the issues knowledge base (Pinecone index) and return top similar issues."""
+            if not self.issues_pinecone_store:
+                return "Issues knowledge base is not available."
+            try:
+                matches = self.issues_pinecone_store.search_similar_issues(query)
+                if not matches:
+                    return "No similar issues found in the knowledge base."
+                lines = []
+                for m in matches:
+                    md = m.get("metadata", {}) or {}
+                    title = (
+                        md.get("title")
+                        or md.get("summary")
+                        or md.get("description")
+                        or "(issue without title)"
+                    )
+                    lines.append(f"- {title}")
+                return "\n".join(lines)
+            except Exception as e:
+                logger.error(f"Error in search_issues_knowledge_base tool: {e}")
+                return f"Error while searching issues knowledge base: {e}"
+
+        @tool
+        def search_mom_meeting_index(query: str) -> str:
+            """Search the previous meeting MoM index (Pinecone) and return relevant context."""
+            if not self.mom_pinecone_store:
+                return "Meeting MoM index is not available."
+            try:
+                matches = self.mom_pinecone_store.search_similar_issues(query)
+                if not matches:
+                    return "No related previous meeting context found."
+                lines = []
+                for m in matches:
+                    md = m.get("metadata", {}) or {}
+                    context = (
+                        md.get("summary")
+                        or md.get("notes")
+                        or md.get("decision")
+                        or "(context snippet)"
+                    )
+                    lines.append(f"- {context}")
+                return "\n".join(lines)
+            except Exception as e:
+                logger.error(f"Error in search_mom_meeting_index tool: {e}")
+                return f"Error while searching MoM meeting index: {e}"
+
+        self.tools = [search_issues_knowledge_base, search_mom_meeting_index]
 
         # ------------------------------------------------------------
         # 3️⃣ Initialize LLM (event extraction + summary + suggestions)
+        #      with OpenAI tool calling via bind_tools
         # ------------------------------------------------------------
         self.llm = ChatOpenAI(
             model=self.config.model_name,
             temperature=self.config.temperature,
             max_tokens=1500,
             openai_api_key=self.config.openai_api_key,
-            tools=[self.issue_search_tool_def, self.mom_search_tool_def],
-            tool_choice="auto",
-        )
+        ).bind_tools(self.tools)
 
         self.output_parser = JsonOutputParser(pydantic_object=MeetingOutput)
 
