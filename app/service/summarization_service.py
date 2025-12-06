@@ -70,6 +70,7 @@ class SummarizationService:
         @tool
         def search_issues_knowledge_base(query: str) -> str:
             """Search the issues knowledge base (Pinecone index) and return top similar issues."""
+            logger.info(f"[SummarizationService] Tool 'search_issues_knowledge_base' invoked with query: {query}")
             if not self.issues_pinecone_store:
                 return "Issues knowledge base is not available."
             try:
@@ -86,7 +87,9 @@ class SummarizationService:
                         or "(issue without title)"
                     )
                     lines.append(f"- {title}")
-                return "\n".join(lines)
+                result_text = "\n".join(lines)
+                logger.info("[SummarizationService] Tool 'search_issues_knowledge_base' returning results")
+                return result_text
             except Exception as e:
                 logger.error(f"Error in search_issues_knowledge_base tool: {e}")
                 return f"Error while searching issues knowledge base: {e}"
@@ -94,6 +97,7 @@ class SummarizationService:
         @tool
         def search_mom_meeting_index(query: str) -> str:
             """Search the previous meeting MoM index (Pinecone) and return relevant context."""
+            logger.info(f"[SummarizationService] Tool 'search_mom_meeting_index' invoked with query: {query}")
             if not self.mom_pinecone_store:
                 return "Meeting MoM index is not available."
             try:
@@ -110,7 +114,9 @@ class SummarizationService:
                         or "(context snippet)"
                     )
                     lines.append(f"- {context}")
-                return "\n".join(lines)
+                result_text = "\n".join(lines)
+                logger.info("[SummarizationService] Tool 'search_mom_meeting_index' returning results")
+                return result_text
             except Exception as e:
                 logger.error(f"Error in search_mom_meeting_index tool: {e}")
                 return f"Error while searching MoM meeting index: {e}"
@@ -319,7 +325,9 @@ Guidelines:
 
                 # suggestion is optional; if we built any suggestion parts, join them; otherwise default to None
                 if suggestion_parts:
-                    result["suggestion"] = "\n\n".join(suggestion_parts)
+                    final_suggestion = "\n\n".join(suggestion_parts)
+                    result["suggestion"] = final_suggestion
+                    logger.info(f"[SummarizationService] Final suggestion generated: {final_suggestion}")
                 elif "suggestion" not in result:
                     result["suggestion"] = None
 

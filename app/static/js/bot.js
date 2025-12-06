@@ -27,7 +27,7 @@ async function initAudio() {
 }
 
 function connectWebSocket() { 
-    const wsUrl = `wss://pulse-dev.scooby.getpulseinsights.ai/ws`;
+    const wsUrl = `wss://expressible-overprovidently-devon.ngrok-free.dev/ws`;
     console.group("connectWebSocket()");
     console.log("🌐 Connecting to:", wsUrl);
     
