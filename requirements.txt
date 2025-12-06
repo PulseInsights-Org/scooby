@@ -15,3 +15,5 @@ tiktoken
 Pillow
 ImageHash
 redis
+boto3
+supabase

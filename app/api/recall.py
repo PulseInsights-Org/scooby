@@ -18,6 +18,7 @@ from app.service.summarization_service import SummarizationService
 from app.service.summary_storage import SummaryStorage
 from app.core.config import get_config
 from app.service.screenshare_buffer import ScreenshareRedisBuffer
+from app.service.screenshare_s3 import ScreenshareS3
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ rb = RecallBot()
 participants_manager = ParticipantsManager()
 bot_context = BotContext()
 screenshare_buffer = ScreenshareRedisBuffer()
+screenshare_s3 = ScreenshareS3()
 
 current_bot_id = None
 current_meeting_url = None
@@ -292,6 +294,18 @@ async def recall_realtime_websocket(websocket: WebSocket):
                         image_base64=buffer_b64,
                     )
                     logger.info("Saved UNIQUE screenshare frame to Redis buffer")
+
+                    # Also persist frame + metadata to S3 for long-term storage
+                    await screenshare_s3.push_frame(
+                        org_name=current_x_org_name,
+                        bot_id=current_bot_id,
+                        participant_id=participant_id,
+                        participant_name=participant_name,
+                        ts_absolute=ts_absolute,
+                        ts_relative=ts_relative,
+                        img_hash=img_hash,
+                        image_base64=buffer_b64,
+                    )
                 except Exception as e:
                     logger.warning(f"Failed uniqueness/FPS check or buffer push: {e}")
 
