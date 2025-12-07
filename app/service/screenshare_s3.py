@@ -1,5 +1,6 @@
 import os
 import base64
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -30,12 +31,21 @@ class ScreenshareS3:
         self._bucket = getattr(config, "screenshare_s3_bucket", "").strip()
         self._prefix = getattr(config, "screenshare_s3_prefix", "screenshares/")
 
-        region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+        self._logger = logging.getLogger(__name__)
+
+        # Build S3 client using AWS credentials/region from config
+        region = getattr(config, "aws_region", "") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+        aws_access_key_id = getattr(config, "aws_access_key_id", "")
+        aws_secret_access_key = getattr(config, "aws_secret_access_key", "")
+
+        s3_kwargs = {}
         if region:
-            self._s3 = boto3.client("s3", region_name=region)
-        else:
-            # Region-less client will rely on AWS config/instance metadata
-            self._s3 = boto3.client("s3")
+            s3_kwargs["region_name"] = region
+        if aws_access_key_id and aws_secret_access_key:
+            s3_kwargs["aws_access_key_id"] = aws_access_key_id
+            s3_kwargs["aws_secret_access_key"] = aws_secret_access_key
+
+        self._s3 = boto3.client("s3", **s3_kwargs)
 
         # Supabase-backed metadata store
         self._metadata_store = ScreenshareMetadataStore()
@@ -99,6 +109,7 @@ class ScreenshareS3:
         """
         if not self._bucket:
             # S3 storage not configured; safely no-op
+            self._logger.debug("ScreenshareS3 disabled: no SCREENSHARE_S3_BUCKET configured")
             return
 
         try:
@@ -123,6 +134,8 @@ class ScreenshareS3:
                 ContentType="image/png",
             )
 
+            self._logger.info(f"[ScreenshareS3] Uploaded frame to S3 bucket={self._bucket}, key={key}")
+
             # Insert metadata row into Supabase (no JSON sidecar in S3)
             await self._metadata_store.insert_frame_metadata(
                 org_name=org_name,
@@ -135,7 +148,9 @@ class ScreenshareS3:
                 s3_bucket=self._bucket,
                 s3_key=key,
             )
-        except Exception:
-            # Fail silently; the Redis buffer path is the primary real-time dependency
-            # Detailed logging should be handled by the caller if needed.
+
+            self._logger.debug("[ScreenshareS3] Inserted metadata row into Supabase for key=%s", key)
+        except Exception as e:
+            # Log but do not raise; the Redis buffer path is the primary real-time dependency
+            self._logger.exception(f"[ScreenshareS3] Error uploading frame or writing metadata: {e}")
             return

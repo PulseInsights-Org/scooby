@@ -18,6 +18,11 @@ class SummarizationConfig(BaseModel):
     temperature: float = 0.3  
     max_tokens: int = 500 
 
+    # AWS settings (for S3 access)
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    aws_region: str = os.getenv("AWS_REGION", "")
+
     # Vector / search settings
     pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
     pinecone_index_name: str = os.getenv("PINECONE_ISSUES_INDEX_NAME", "")
