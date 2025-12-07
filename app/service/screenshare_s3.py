@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 
+from app.core.config import get_config
 from app.service.screenshare_metadata_store import ScreenshareMetadataStore
 
 
@@ -25,8 +26,9 @@ class ScreenshareS3:
     """
 
     def __init__(self) -> None:
-        self._bucket = os.getenv("SCREENSHARE_S3_BUCKET", "").strip()
-        self._prefix = os.getenv("SCREENSHARE_S3_PREFIX", "screenshares/")
+        config = get_config()
+        self._bucket = getattr(config, "screenshare_s3_bucket", "").strip()
+        self._prefix = getattr(config, "screenshare_s3_prefix", "screenshares/")
 
         region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
         if region:

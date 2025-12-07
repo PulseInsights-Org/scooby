@@ -27,8 +27,12 @@ class SummarizationConfig(BaseModel):
     supabase_service_role_key: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY", "")
 
-    # Screenshare metadata table name
-    screenshare_metadata_table: str = os.getenv("SCREENSHARE_METADATA_TABLE", "screenshare_frames")
+    # Screenshare metadata table name (constant, not from env)
+    screenshare_metadata_table: str = "screenshare_frames"
+
+    # Screenshare S3 configuration
+    screenshare_s3_bucket: str = os.getenv("SCREENSHARE_S3_BUCKET", "")
+    screenshare_s3_prefix: str = "screenshares/"
 
     # Storage settings
     summaries_dir: str = "summaries"

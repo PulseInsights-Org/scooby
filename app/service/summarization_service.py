@@ -11,6 +11,7 @@ import os
 from app.core.config import get_config
 from app.service.transcript_buffer import TranscriptItem
 from app.service.Pinecone_Store import VectoreStore
+from app.service.screenshare_metadata_store import ScreenshareMetadataStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class SummarizationService:
 
         self.issues_pinecone_store: Optional[VectoreStore] = None
         self.mom_pinecone_store: Optional[VectoreStore] = None
+        self.screenshare_metadata_store: Optional[ScreenshareMetadataStore] = ScreenshareMetadataStore()
 
         try:
             self.issues_pinecone_store = VectoreStore(index_name=issues_index_name)
@@ -63,69 +65,154 @@ class SummarizationService:
         except Exception as e:
             logger.error(f"Failed to initialize MoM PineconeStore: {e}")
 
-        # ------------------------------------------------------------
-        # 2️⃣ Define LangChain tools (issues + MoM) using OpenAI tool calling
-        # ------------------------------------------------------------
+        # -------------------------------------------------------------------
+        # 2️⃣ Define LangChain tools (issues + MoM + screenshare) using OpenAI tool calling
+        # -------------------------------------------------------------------
 
         @tool
-        def search_issues_knowledge_base(query: str) -> str:
-            """Search the issues knowledge base (Pinecone index) and return top similar issues."""
-            logger.info(f"[SummarizationService] Tool 'search_issues_knowledge_base' invoked with query: {query}")
-            if not self.issues_pinecone_store:
-                return "Issues knowledge base is not available."
+        def search_meeting_knowledge_base(
+            query: str,
+            event_type: Literal["issue-related", "MoM-event", "general-event"] = "general-event",
+        ) -> str:
+            """Search the appropriate meeting knowledge base based on event_type.
+
+            - "issue-related": search issues knowledge base for similar issues.
+            - "MoM-event": search previous meeting MoM index for related context.
+            - "general-event": no search performed, returns informational message.
+            """
+
+            logger.info(
+                f"[SummarizationService] Tool 'search_meeting_knowledge_base' invoked with "
+                f"query: {query} and event_type: {event_type}"
+            )
+
+            # Select appropriate index based on event_type
+            store = None
+            index_kind = None
+
+            if event_type == "issue-related":
+                store = self.issues_pinecone_store
+                index_kind = "issues"
+                if not store:
+                    return "Issues knowledge base is not available."
+            elif event_type == "MoM-event":
+                store = self.mom_pinecone_store
+                index_kind = "mom"
+                if not store:
+                    return "Meeting MoM index is not available."
+            else:
+                return "No knowledge base search needed for this event type."
+
             try:
-                matches = self.issues_pinecone_store.search_similar_issues(query)
+                matches = store.search_similar_issues(query)
                 if not matches:
-                    return "No similar issues found in the knowledge base."
+                    if index_kind == "issues":
+                        return "No similar issues found in the knowledge base."
+                    else:
+                        return "No related previous meeting context found."
+
                 lines = []
                 for m in matches:
                     md = m.get("metadata", {}) or {}
-                    title = (
-                        md.get("title")
-                        or md.get("summary")
-                        or md.get("description")
-                        or "(issue without title)"
-                    )
-                    lines.append(f"- {title}")
+
+                    if index_kind == "issues":
+                        text = (
+                            md.get("title")
+                            or md.get("summary")
+                            or md.get("description")
+                            or "(issue without title)"
+                        )
+                    else:  # mom index
+                        text = (
+                            md.get("summary")
+                            or md.get("notes")
+                            or md.get("decision")
+                            or "(context snippet)"
+                        )
+
+                    lines.append(f"- {text}")
+
                 result_text = "\n".join(lines)
-                logger.info("[SummarizationService] Tool 'search_issues_knowledge_base' returning results")
+                logger.info("[SummarizationService] Tool 'search_meeting_knowledge_base' returning results")
                 return result_text
             except Exception as e:
-                logger.error(f"Error in search_issues_knowledge_base tool: {e}")
-                return f"Error while searching issues knowledge base: {e}"
+                logger.error(f"Error in search_meeting_knowledge_base tool: {e}")
+                if index_kind == "issues":
+                    return f"Error while searching issues knowledge base: {e}"
+                elif index_kind == "mom":
+                    return f"Error while searching MoM meeting index: {e}"
+                return f"Error while searching meeting knowledge base: {e}"
 
         @tool
-        def search_mom_meeting_index(query: str) -> str:
-            """Search the previous meeting MoM index (Pinecone) and return relevant context."""
-            logger.info(f"[SummarizationService] Tool 'search_mom_meeting_index' invoked with query: {query}")
-            if not self.mom_pinecone_store:
-                return "Meeting MoM index is not available."
-            try:
-                matches = self.mom_pinecone_store.search_similar_issues(query)
-                if not matches:
-                    return "No related previous meeting context found."
-                lines = []
-                for m in matches:
-                    md = m.get("metadata", {}) or {}
-                    context = (
-                        md.get("summary")
-                        or md.get("notes")
-                        or md.get("decision")
-                        or "(context snippet)"
-                    )
-                    lines.append(f"- {context}")
-                result_text = "\n".join(lines)
-                logger.info("[SummarizationService] Tool 'search_mom_meeting_index' returning results")
-                return result_text
-            except Exception as e:
-                logger.error(f"Error in search_mom_meeting_index tool: {e}")
-                return f"Error while searching MoM meeting index: {e}"
+        def get_screenshare_frames_by_time(
+            participant_name: str,
+            timestamp_range: str,
+        ) -> Dict[str, Any]:
+            """Fetch screenshare frames for a participant within a relative time window.
 
-        self.tools = [search_issues_knowledge_base, search_mom_meeting_index]
+            Args:
+                participant_name: Name of the participant (case-insensitive partial match).
+                timestamp_range: Relative time range exactly as in events file,
+                    e.g. "00:10-00:30" or "1:02:03-1:02:30".
+
+            Returns a dict with:
+                - count: number of frames found
+                - s3_keys: list of S3 object keys for the matching frames
+            """
+
+            logger.info(
+                f"[SummarizationService] Tool 'get_screenshare_frames_by_time' invoked with "
+                f"participant_name={participant_name}, range={timestamp_range}"
+            )
+
+            store = self.screenshare_metadata_store
+            if not store:
+                return {"count": 0, "s3_keys": []}
+
+            def _parse_ts(value: str) -> float:
+                parts = value.strip().split(":")
+                parts = [p.strip() for p in parts if p.strip()]
+                if not parts:
+                    return 0.0
+                if len(parts) == 1:
+                    return float(parts[0])
+                if len(parts) == 2:
+                    m, s = parts
+                    return int(m) * 60 + float(s)
+                # H:MM:SS
+                h, m, s = parts[-3], parts[-2], parts[-1]
+                return int(h) * 3600 + int(m) * 60 + float(s)
+
+            # Expect range in form "start-end", both sides using the same
+            # relative timestamp format as in the events file (e.g. "00:10-00:30").
+            try:
+                range_str = timestamp_range.strip()
+                start_str, end_str = [p.strip() for p in range_str.split("-", 1)]
+                start_rel = _parse_ts(start_str)
+                end_rel = _parse_ts(end_str)
+            except Exception as e:
+                logger.error(f"Error parsing timestamp range in get_screenshare_frames_by_time: {e}")
+                return {"count": 0, "s3_keys": []}
+
+            records, count = store.query_frames_by_participant_and_window(
+                participant_name=participant_name,
+                start_relative=start_rel,
+                end_relative=end_rel,
+            )
+
+            s3_keys = [r.get("s3_key") for r in records if r.get("s3_key")]
+
+            logger.info(
+                f"[SummarizationService] get_screenshare_frames_by_time found {count} frames; "
+                f"first 5 keys: {s3_keys[:5]}"
+            )
+
+            return {"count": count, "s3_keys": s3_keys}
+
+        self.tools = [search_meeting_knowledge_base, get_screenshare_frames_by_time]
 
         # ------------------------------------------------------------
         # 3️⃣ Initialize LLM (event extraction + summary + suggestions)
-        #      with OpenAI tool calling via bind_tools
         # ------------------------------------------------------------
         self.llm = ChatOpenAI(
             model=self.config.model_name,
@@ -184,7 +271,7 @@ Guidelines:
 - Summary: Professional MOM format, not conversational
 - Maintain continuity across the entire meeting
 - Preserve important details (dates, numbers, names, commitments)
- - Suggestions must be meaningful, practical and tied to the described issues or MoM-related context."""
+- Suggestions must be meaningful, practical and tied to the described issues or MoM-related context."""
 
     def _build_input(
         self,
@@ -323,7 +410,7 @@ Guidelines:
                         except Exception as e:
                             logger.error(f"Error querying MoM Pinecone index: {e}")
 
-                # suggestion is optional; if we built any suggestion parts, join them; otherwise default to None
+                # suggestion is optional; 
                 if suggestion_parts:
                     final_suggestion = "\n\n".join(suggestion_parts)
                     result["suggestion"] = final_suggestion
