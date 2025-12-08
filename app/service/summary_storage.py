@@ -43,11 +43,17 @@ class SummaryStorage:
             self.summaries_dir,
             f"{org_name}_{meeting_id}{self.config.events_file_suffix}"
         )
+        # Suggestions file will live alongside summary and events
+        self.suggestions_path = os.path.join(
+            self.summaries_dir,
+            f"{org_name}_{meeting_id}_suggestions.txt",
+        )
 
         logger.info(f"SummaryStorage initialized for {org_name}_{meeting_id}")
         logger.info(f"Transcript path: {self.transcript_path}")
         logger.info(f"Events path: {self.events_path}")
         logger.info(f"Summary path: {self.summary_path}")
+        logger.info(f"Suggestions path: {self.suggestions_path}")
 
     async def save_transcript_line(
         self,
@@ -134,6 +140,24 @@ class SummaryStorage:
 
         except Exception as e:
             logger.exception(f"Error replacing summary: {e}")
+
+    async def append_suggestion(self, suggestion: str) -> None:
+        """Append a suggestion block to the suggestions file in summaries dir."""
+        try:
+            if not suggestion:
+                return
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            header = f"\n=== SUGGESTION @ {timestamp} ===\n"
+            content = header + suggestion.strip() + "\n"
+
+            async with aiofiles.open(self.suggestions_path, "a", encoding="utf-8") as f:
+                await f.write(content)
+
+            logger.info(f"Appended suggestion to {self.suggestions_path} ({len(suggestion)} chars)")
+
+        except Exception as e:
+            logger.exception(f"Error appending suggestion: {e}")
 
     async def get_current_summary(self) -> Optional[str]:
         """

@@ -55,12 +55,14 @@ class SummarizationService:
 
         try:
             self.issues_pinecone_store = VectoreStore(index_name=issues_index_name)
+            self.issues_pinecone_store.setup_index()
             logger.info(f"Initialized VectoreStore for issues index: {issues_index_name}")
         except Exception as e:
             logger.error(f"Failed to initialize issues PineconeStore: {e}")
 
         try:
             self.mom_pinecone_store = VectoreStore(index_name=mom_index_name)
+            self.mom_pinecone_store.setup_index()
             logger.info(f"Initialized VectoreStore for MoM index: {mom_index_name}")
         except Exception as e:
             logger.error(f"Failed to initialize MoM PineconeStore: {e}")

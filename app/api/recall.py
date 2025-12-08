@@ -155,10 +155,12 @@ async def _process_buffer_and_summarize():
         # Process segment: extract events + update summary
         result = await summarization_service.process_segment(items, current_summary)
 
-        # Log only the suggestion (if present) to the terminal
+        # Log suggestion (if present) and persist it via SummaryStorage
         suggestion = result.get("suggestion")
         if suggestion:
             logger.info(f"Summarization suggestion: {suggestion}")
+            if summary_storage:
+                await summary_storage.append_suggestion(suggestion)
 
         if not summary_storage:
             logger.warning("No summary storage available")
