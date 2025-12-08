@@ -275,7 +275,7 @@ async def recall_realtime_websocket(websocket: WebSocket):
                 key = f"{current_bot_id}:{participant_id}"
                 if ts_relative is not None:
                     last_ts = participant_last_ts.get(key)
-                    if last_ts is not None and (ts_relative - last_ts) < 2.0:
+                    if last_ts is not None and (ts_relative - last_ts) < 1.0:
                         # Skip frames that are too close in time
                         continue
 
@@ -300,7 +300,7 @@ async def recall_realtime_websocket(websocket: WebSocket):
                     hashes.add(img_hash)
                     if ts_relative is not None:
                         participant_last_ts[key] = ts_relative
-
+                    # Uncomment this after testing 
                     # await screenshare_buffer.push_frame(
                     #     org_name=current_x_org_name,
                     #     bot_id=current_bot_id,
@@ -323,7 +323,7 @@ async def recall_realtime_websocket(websocket: WebSocket):
                     #     img_hash=img_hash,
                     #     image_base64=buffer_b64,
                     # )
-
+                    # comment the below block of code after testing., [not a production compatible version]
                     file_path = screenshare_storage.save_png_frame(
                         org_name=current_x_org_name,
                         bot_id=current_bot_id,
