@@ -8,6 +8,12 @@ load_dotenv()
 class SummarizationConfig(BaseModel):
     """Configuration for transcript summarization system"""
 
+    # Public URL settings (for webhooks and websockets)
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
+    
+    # Recall.ai settings
+    recall_api_key: str = os.getenv("RECALL_API_KEY", "")
+
     # Buffer settings
     buffer_max_items: int = int(os.getenv("SUMMARIZATION_BUFFER_MAX_ITEMS", "7"))
     buffer_max_seconds: float = float(os.getenv("SUMMARIZATION_BUFFER_MAX_SECONDS", "15.0"))

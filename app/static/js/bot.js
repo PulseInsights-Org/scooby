@@ -3,8 +3,34 @@ let audioContext;
 let isModelSpeaking = false;
 const BOT_TYPE = 'scooby'; // This bot only responds to scooby messages
 
+// Configuration loaded from backend
+let config = {
+    wsUrl: null,
+    publicBaseUrl: null
+};
+
 const pulseCoreEl = document.getElementById('pulseCore');
 const waveVisualizationEl = document.getElementById('waveVisualization');
+
+async function loadConfig() {
+    console.group("loadConfig()");
+    try {
+        const response = await fetch('/api/config');
+        if (!response.ok) {
+            throw new Error(`Failed to load config: ${response.status}`);
+        }
+        config = await response.json();
+        console.log("✅ Configuration loaded:", config);
+    } catch (error) {
+        console.error("❌ Failed to load configuration:", error);
+        // Fallback to localhost for development
+        config.wsUrl = 'ws://localhost:8000/ws';
+        config.publicBaseUrl = 'http://localhost:8000';
+        console.warn("⚠️ Using fallback configuration:", config);
+    } finally {
+        console.groupEnd();
+    }
+}
 
 async function initAudio() {
     console.group("initAudio()");
@@ -26,19 +52,24 @@ async function initAudio() {
     }
 }
 
-function connectWebSocket() { 
-    const wsUrl = `wss://expressible-overprovidently-devon.ngrok-free.dev/ws`;
+function connectWebSocket() {
+    if (!config.wsUrl) {
+        console.error("❌ WebSocket URL not configured. Call loadConfig() first.");
+        return;
+    }
+
+    const wsUrl = config.wsUrl;
     console.group("connectWebSocket()");
     console.log("🌐 Connecting to:", wsUrl);
-    
+
     ws = new WebSocket(wsUrl);
-    
-    ws.onopen = function() {
+
+    ws.onopen = function () {
         console.log('✅ WS open');
         updateStatus('connected');
     };
-    
-    ws.onmessage = function(event) {
+
+    ws.onmessage = function (event) {
         console.groupCollapsed("📩 WS message");
 
         console.log("Raw event.data typeof:", typeof event.data);
@@ -51,20 +82,20 @@ function connectWebSocket() {
             const data = JSON.parse(event.data);
             console.log("✅ Parsed WS JSON:", data);
             handleWebSocketMessage(data);
-        } catch(e) {
+        } catch (e) {
             console.error("❌ JSON parse error:", e, event.data);
         } finally {
             console.groupEnd();
         }
     };
-    
-    ws.onclose = function(evt) {
+
+    ws.onclose = function (evt) {
         console.warn('⚠️ WS close:', { code: evt.code, reason: evt.reason, wasClean: evt.wasClean });
         updateStatus('disconnected');
         setTimeout(connectWebSocket, 3000);
     };
-    
-    ws.onerror = function(error) {
+
+    ws.onerror = function (error) {
         console.error('❌ WS error:', error);
         updateStatus('disconnected');
     };
@@ -89,7 +120,7 @@ function handleWebSocketMessage(data) {
             console.log("📡 Status:", data.connected);
             updateStatus(data.connected ? 'connected' : 'disconnected');
             break;
-            
+
         case 'audio':
             console.log("🎧 Audio payload received");
             console.log("🎧 Audio message:", {
@@ -102,7 +133,7 @@ function handleWebSocketMessage(data) {
             }
             playAudio(data.data);
             break;
-            
+
         case 'model_speaking':
             console.log("🗣️ model_speaking:", data.speaking);
             isModelSpeaking = data.speaking;
@@ -116,14 +147,14 @@ function handleWebSocketMessage(data) {
                 showWaveVisualization(false);
             }
             break;
-            
+
         default:
             console.log("ℹ️ Unhandled WS type:", data.type);
             console.warn('❓ Unknown message type:', data.type, data);
     }
     console.groupEnd();
 }
-                     
+
 let audioScheduleTime = 0;
 
 function playAudio(base64Data) {
@@ -136,7 +167,7 @@ function playAudio(base64Data) {
         console.groupEnd();
         return;
     }
-    
+
     try {
         if (typeof base64Data !== 'string' || base64Data.length === 0) {
             console.error("❌ Invalid base64 payload:", base64Data);
@@ -163,7 +194,7 @@ function playAudio(base64Data) {
         console.log("📀 WAV total bytes:", wav.byteLength);
 
         console.time("decodeAudioData");
-        
+
         audioContext.decodeAudioData(
             wav.buffer,
             (decodedBuffer) => {
@@ -199,7 +230,7 @@ function scheduleAudioChunk(audioBuffer) {
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
-        
+
         // Enhanced animation control during audio playback
         source.onended = () => {
             console.log("🔚 Source ended at", audioContext.currentTime.toFixed(3));
@@ -211,7 +242,7 @@ function scheduleAudioChunk(audioBuffer) {
 
         const currentTime = audioContext.currentTime;
         const startTime = Math.max(currentTime, audioScheduleTime);
-        
+
         console.log("🕒 Timing:", {
             currentTime,
             audioScheduleTime,
@@ -221,7 +252,7 @@ function scheduleAudioChunk(audioBuffer) {
 
         source.start(startTime);
         audioScheduleTime = startTime + audioBuffer.duration;
-        
+
         console.log(`✅ Scheduled chunk: duration=${audioBuffer.duration.toFixed(3)}s, nextSlot=${audioScheduleTime.toFixed(3)}`);
     } catch (e) {
         console.error("❌ scheduleAudioChunk failed:", e);
@@ -271,7 +302,7 @@ function createWAVHeaderAndBlob(pcmBytes, sampleRate = 24000) {
 function updateStatus(type) {
     console.log("🔔 updateStatus:", type);
     pulseCoreEl.className = `pulse-core ${type}`;
-    
+
     // Add pulse animation for speaking state
     if (type === 'speaking') {
         addPulseAnimation();
@@ -338,15 +369,17 @@ function showWaveVisualization(show, type = 'listening') {
     }
 }
 
-document.addEventListener('DOMContentLoaded', async function() {
+document.addEventListener('DOMContentLoaded', async function () {
     console.group("DOMContentLoaded");
-    console.log("📂 DOM ready, init audio + WS…");
+    console.log("📂 DOM ready, loading config...");
+    await loadConfig();
+    console.log("📂 Config loaded, init audio + WS…");
     await initAudio();
     connectWebSocket();
     console.groupEnd();
 });
 
-document.addEventListener('click', async function() {
+document.addEventListener('click', async function () {
     console.log("👆 Click: resume AudioContext if suspended");
     if (audioContext && audioContext.state === 'suspended') {
         await audioContext.resume();

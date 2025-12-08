@@ -1,6 +1,6 @@
 import httpx
 from fastapi import HTTPException
-import os
+from app.core.config import get_config
 
 
 # 1. Effective error handling
@@ -10,14 +10,27 @@ import os
 
 class RecallBot():
     def __init__(self) -> None:
-        pass
+        self.config = get_config()
     
     async def add_bots(self, meeting_url : str, bot_name : str = "scooby"):
     
         recall_api_url = "https://us-west-2.recall.ai/api/v1/bot/"
-        recall_api_key = os.getenv("RECALL_API_KEY")
+        
+        # Get configuration
+        recall_api_key = self.config.recall_api_key
         if not recall_api_key:
             raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
+        
+        # Get public base URL from configuration
+        public_base_url = self.config.public_base_url
+        if not public_base_url:
+            raise HTTPException(status_code=500, detail="Missing PUBLIC_BASE_URL environment variable")
+        
+        # Remove trailing slash if present
+        public_base_url = public_base_url.rstrip('/')
+        
+        # Convert https:// to wss:// for WebSocket URL
+        ws_base_url = public_base_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
         payload = {
             "meeting_url": meeting_url,
@@ -28,7 +41,7 @@ class RecallBot():
                 "realtime_endpoints": [
                     {
                         "type": "webhook",
-                        "url": "https://expressible-overprovidently-devon.ngrok-free.dev/api/webhook/recall",
+                        "url": f"{public_base_url}/api/webhook/recall",
                         "events": [
                             "transcript.data",
                             "participant_events.join",
@@ -37,7 +50,7 @@ class RecallBot():
                     },
                     {
                         "type": "websocket",
-                        "url": "wss://expressible-overprovidently-devon.ngrok-free.dev/api/ws/recall-realtime",
+                        "url": f"{ws_base_url}/api/ws/recall-realtime",
                         "events": [
                             "participant_events.screenshare_on",
                             "participant_events.screenshare_off",
@@ -55,7 +68,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": "https://expressible-overprovidently-devon.ngrok-free.dev/"
+                        "url": f"{public_base_url}/"
                     }
                 }
             },
@@ -101,7 +114,9 @@ class RecallBot():
     async def handle_bot_removal(self, bot_id: str) -> dict:
 
         recall_api_url = f"https://us-west-2.recall.ai/api/v1/bot/{bot_id}/leave_call/"
-        recall_api_key = os.getenv("RECALL_API_KEY")
+        
+        # Get configuration
+        recall_api_key = self.config.recall_api_key
         if not recall_api_key:
             raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
 
@@ -142,7 +157,9 @@ class RecallBot():
     async def send_chat_message(self, bot_id: str, message: str, to: str = "everyone", pin: bool = False) -> dict:
         
         recall_api_url = f"https://us-west-2.recall.ai/api/v1/bot/{bot_id}/send_chat_message/"
-        recall_api_key = os.getenv("RECALL_API_KEY")
+        
+        # Get configuration
+        recall_api_key = self.config.recall_api_key
         if not recall_api_key:
             raise HTTPException(status_code=500, detail="Missing RECALL_API_KEY environment variable")
 
