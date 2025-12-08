@@ -14,6 +14,9 @@ class SummarizationConfig(BaseModel):
     # Recall.ai settings
     recall_api_key: str = os.getenv("RECALL_API_KEY", "")
 
+    # GoCobalt settings (Slack send message workflow)
+    cobalt_api_key: str = os.getenv("COBALT_API_KEY", "")
+
     # Buffer settings
     buffer_max_items: int = int(os.getenv("SUMMARIZATION_BUFFER_MAX_ITEMS", "7"))
     buffer_max_seconds: float = float(os.getenv("SUMMARIZATION_BUFFER_MAX_SECONDS", "15.0"))

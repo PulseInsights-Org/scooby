@@ -159,6 +159,35 @@ class SummaryStorage:
         except Exception as e:
             logger.exception(f"Error appending suggestion: {e}")
 
+    async def get_latest_suggestion(self) -> Optional[str]:
+        """Return the latest suggestion block if available."""
+        try:
+            if not os.path.exists(self.suggestions_path):
+                return None
+
+            async with aiofiles.open(self.suggestions_path, "r", encoding="utf-8") as f:
+                content = await f.read()
+
+            if not content.strip():
+                return None
+
+            lines = content.split("\n")
+            last_header_index = -1
+            for idx, line in enumerate(lines):
+                if line.startswith("=== SUGGESTION @"):
+                    last_header_index = idx
+
+            if last_header_index == -1:
+                return content.strip()
+
+            suggestion_lines = lines[last_header_index + 1 :]
+            suggestion_text = "\n".join(suggestion_lines).strip()
+            return suggestion_text or None
+
+        except Exception as e:
+            logger.exception(f"Error reading latest suggestion: {e}")
+            return None
+
     async def get_current_summary(self) -> Optional[str]:
         """
         Read the current global summary from summary file

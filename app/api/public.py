@@ -2,8 +2,9 @@ from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import os
-from app.api.recall import add_bot 
+from app.api.recall import add_bot, get_current_summary_text, get_latest_suggestion_text
 from app.core.config import get_config
+from app.service.cobalt_slack_client import CobaltSlackClient
 
 
 router = APIRouter()
@@ -17,6 +18,10 @@ class MeetingRequest(BaseModel):
     isTranscript: bool = False
     x_org_name: str
     saveTranscript: bool = True
+
+
+class SlackChannelRequest(BaseModel):
+    channel_id: str
 
 
 @router.get("/")
@@ -54,4 +59,27 @@ async def add_scooby_bot(body : MeetingRequest, request: Request):
             "message": "Scooby Bot already exists, Please remove and try again"
         }
     return {"bot_id": bot_id}
+
+
+slack_client = CobaltSlackClient()
+
+
+@router.post("/summary")
+async def send_summary_to_slack(body: SlackChannelRequest):
+    summary = await get_current_summary_text()
+    if not summary:
+        return {"status": "no_summary_available"}
+
+    await slack_client.send_message(body.channel_id, summary)
+    return {"status": "sent", "type": "summary"}
+
+
+@router.post("/suggest")
+async def send_suggestion_to_slack(body: SlackChannelRequest):
+    suggestion = await get_latest_suggestion_text()
+    if not suggestion:
+        return {"status": "no_suggestion_available"}
+
+    await slack_client.send_message(body.channel_id, suggestion)
+    return {"status": "sent", "type": "suggestion"}
 

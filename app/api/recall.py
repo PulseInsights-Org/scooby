@@ -19,6 +19,7 @@ from app.service.summary_storage import SummaryStorage
 from app.core.config import get_config
 from app.service.screenshare_buffer import ScreenshareRedisBuffer
 from app.service.screenshare_s3 import ScreenshareS3
+from app.service.screenshare_storage import ScreenshareStorage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ participants_manager = ParticipantsManager()
 bot_context = BotContext()
 screenshare_buffer = ScreenshareRedisBuffer()
 screenshare_s3 = ScreenshareS3()
+screenshare_storage = ScreenshareStorage()
 
 current_bot_id = None
 current_meeting_url = None
@@ -57,6 +59,21 @@ transcript_writer = TranscriptWriter(
 )
 
 ti = TranscriptIngestion(org_name="")
+
+async def get_current_summary_text() -> Optional[str]:
+    """Return the current global summary for the active meeting, if any."""
+    global summary_storage
+    if not summary_storage:
+        return None
+    return await summary_storage.get_current_summary()
+
+async def get_latest_suggestion_text() -> Optional[str]:
+    """Return the latest suggestion text for the active meeting, if any."""
+    global summary_storage
+    if not summary_storage:
+        return None
+    # SummaryStorage has helper to read latest suggestion block
+    return await summary_storage.get_latest_suggestion()
 
 def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
     """Simple check if this exact audio segment was already processed"""
@@ -284,30 +301,39 @@ async def recall_realtime_websocket(websocket: WebSocket):
                     if ts_relative is not None:
                         participant_last_ts[key] = ts_relative
 
-                    # Push frame into Redis-backed buffer (base64-encoded)
-                    await screenshare_buffer.push_frame(
-                        org_name=current_x_org_name,
-                        bot_id=current_bot_id,
-                        participant_id=participant_id,
-                        participant_name=participant_name,
-                        ts_absolute=ts_absolute,
-                        ts_relative=ts_relative,
-                        img_hash=img_hash,
-                        image_base64=buffer_b64,
-                    )
-                    logger.info("Saved UNIQUE screenshare frame to Redis buffer")
+                    # await screenshare_buffer.push_frame(
+                    #     org_name=current_x_org_name,
+                    #     bot_id=current_bot_id,
+                    #     participant_id=participant_id,
+                    #     participant_name=participant_name,
+                    #     ts_absolute=ts_absolute,
+                    #     ts_relative=ts_relative,
+                    #     img_hash=img_hash,
+                    #     image_base64=buffer_b64,
+                    # )
+                    # logger.info("Saved UNIQUE screenshare frame to Redis buffer")
 
-                    # Also persist frame + metadata to S3 for long-term storage
-                    await screenshare_s3.push_frame(
+                    # await screenshare_s3.push_frame(
+                    #     org_name=current_x_org_name,
+                    #     bot_id=current_bot_id,
+                    #     participant_id=participant_id,
+                    #     participant_name=participant_name,
+                    #     ts_absolute=ts_absolute,
+                    #     ts_relative=ts_relative,
+                    #     img_hash=img_hash,
+                    #     image_base64=buffer_b64,
+                    # )
+
+                    file_path = screenshare_storage.save_png_frame(
                         org_name=current_x_org_name,
                         bot_id=current_bot_id,
                         participant_id=participant_id,
                         participant_name=participant_name,
-                        ts_absolute=ts_absolute,
-                        ts_relative=ts_relative,
-                        img_hash=img_hash,
+                        timestamp_absolute=ts_absolute,
+                        timestamp_relative=ts_relative,
                         image_base64=buffer_b64,
                     )
+                    logger.info(f"Saved UNIQUE screenshare frame locally at: {file_path}")
                 except Exception as e:
                     logger.warning(f"Failed uniqueness/FPS check or buffer push: {e}")
 
