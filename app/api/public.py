@@ -147,7 +147,11 @@ async def send_suggestion_to_slack(request: Request):
 
 @router.post("/analyze-screen")
 async def analyze_screen_from_slack(request: Request):
-    """Trigger screenshare analysis for the recent window and send result to Slack."""
+    """Trigger screenshare analysis for the recent window and send result to Slack.
+    
+    This endpoint returns immediately to avoid Slack's 3-second timeout,
+    then processes the analysis in the background.
+    """
 
     logger.info("[ANALYZE_SCREEN] Incoming request: query_params=%s", dict(request.query_params))
 
@@ -181,18 +185,46 @@ async def analyze_screen_from_slack(request: Request):
         )
         return {"status": "error", "error": "no_active_bot"}
 
-    try:
-        analysis_text = await screen_analysis_service.analyze_recent_screens(bot_id=bot_id)
-    except Exception:
-        logger.exception("[ANALYZE_SCREEN] Error while analyzing recent screens for bot_id=%s", bot_id)
-        return {"status": "error", "error": "analysis_failed"}
+    # Import asyncio for background task
+    import asyncio
 
-    try:
-        await slack_client.send_message(channel_id, analysis_text)
-        logger.info("[ANALYZE_SCREEN] Sent analysis to channel_id=%s", channel_id)
-    except Exception:
-        logger.exception("[ANALYZE_SCREEN] Failed to send analysis to Slack for channel_id=%s", channel_id)
-        return {"status": "error", "error": "slack_send_failed"}
+    async def process_and_send_analysis():
+        """Background task to process vision analysis and send to Slack"""
+        try:
+            logger.info("[ANALYZE_SCREEN] Starting background analysis for bot_id=%s", bot_id)
+            
+            # Send initial "processing" message
+            try:
+                await slack_client.send_message(
+                    channel_id, 
+                    "🔍 Analyzing screenshare frames... This may take a few seconds."
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send processing message: {e}")
+            
+            # Perform the analysis
+            analysis_text = await screen_analysis_service.analyze_recent_screens(bot_id=bot_id)
+            
+            # Send the actual analysis result
+            await slack_client.send_message(channel_id, analysis_text)
+            logger.info("[ANALYZE_SCREEN] Successfully sent analysis to channel_id=%s", channel_id)
+            
+        except Exception:
+            logger.exception("[ANALYZE_SCREEN] Error in background analysis task for bot_id=%s", bot_id)
+            try:
+                await slack_client.send_message(
+                    channel_id,
+                    "❌ Failed to analyze screenshare frames. Please try again or check logs for details."
+                )
+            except Exception:
+                logger.exception("[ANALYZE_SCREEN] Failed to send error message to Slack")
 
-    return {"status": "sent", "type": "screen_analysis"}
+    # Start background task
+    asyncio.create_task(process_and_send_analysis())
+    
+    # Return immediately to avoid Slack timeout
+    logger.info("[ANALYZE_SCREEN] Acknowledged request, processing in background")
+    return {"status": "processing", "message": "Analysis started in background"}
+
+
 

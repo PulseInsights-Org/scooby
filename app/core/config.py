@@ -27,6 +27,15 @@ class SummarizationConfig(BaseModel):
     temperature: float = 0.3  
     max_tokens: int = 500 
 
+    # Google Gemini Vision settings
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    vision_enabled: bool = os.getenv("VISION_ENABLED", "true").lower() == "true"
+    vision_model: str = os.getenv("VISION_MODEL", "gemini-1.5-flash")
+    vision_max_tokens: int = int(os.getenv("VISION_MAX_TOKENS", "2000"))
+    vision_temperature: float = float(os.getenv("VISION_TEMPERATURE", "0.2"))
+    vision_max_images_per_request: int = int(os.getenv("VISION_MAX_IMAGES_PER_REQUEST", "10"))
+ 
+
     # AWS settings (for S3 access)
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
