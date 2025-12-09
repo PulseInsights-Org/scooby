@@ -63,6 +63,11 @@ transcript_writer = TranscriptWriter(
 
 ti = TranscriptIngestion(org_name="")
 
+
+def get_active_bot_id() -> Optional[str]:
+    """Return the currently active Recall bot id, if any."""
+    return current_bot_id
+
 async def get_current_summary_text() -> Optional[str]:
     """Return the current global summary for the active meeting, if any."""
     global summary_storage
@@ -344,39 +349,38 @@ async def recall_realtime_websocket(websocket: WebSocket):
                     if ts_relative is not None:
                         participant_last_ts[key] = ts_relative
                     # Uncomment this after testing 
-                    # await screenshare_buffer.push_frame(
-                    #     org_name=current_x_org_name,
-                    #     bot_id=current_bot_id,
-                    #     participant_id=participant_id,
-                    #     participant_name=participant_name,
-                    #     ts_absolute=ts_absolute,
-                    #     ts_relative=ts_relative,
-                    #     img_hash=img_hash,
-                    #     image_base64=buffer_b64,
-                    # )
-                    # logger.info("Saved UNIQUE screenshare frame to Redis buffer")
-
-                    # await screenshare_s3.push_frame(
-                    #     org_name=current_x_org_name,
-                    #     bot_id=current_bot_id,
-                    #     participant_id=participant_id,
-                    #     participant_name=participant_name,
-                    #     ts_absolute=ts_absolute,
-                    #     ts_relative=ts_relative,
-                    #     img_hash=img_hash,
-                    #     image_base64=buffer_b64,
-                    # )
-                    # comment the below block of code after testing., [not a production compatible version]
-                    file_path = screenshare_storage.save_png_frame(
+                    await screenshare_buffer.push_frame(
                         org_name=current_x_org_name,
                         bot_id=current_bot_id,
                         participant_id=participant_id,
                         participant_name=participant_name,
-                        timestamp_absolute=ts_absolute,
-                        timestamp_relative=ts_relative,
+                        ts_absolute=ts_absolute,
+                        ts_relative=ts_relative,
+                        img_hash=img_hash,
                         image_base64=buffer_b64,
                     )
-                    logger.info(f"Saved UNIQUE screenshare frame locally at: {file_path}")
+                    logger.info("Saved UNIQUE screenshare frame to Redis buffer")
+
+                    await screenshare_s3.push_frame(
+                        org_name=current_x_org_name,
+                        bot_id=current_bot_id,
+                        participant_id=participant_id,
+                        participant_name=participant_name,
+                        ts_absolute=ts_absolute,
+                        ts_relative=ts_relative,
+                        img_hash=img_hash,
+                        image_base64=buffer_b64,
+                    )
+                    # comment the below block of code after testing., [not a production compatible version]
+                    # file_path = screenshare_storage.save_png_frame(
+                    #     org_name=current_x_org_name,
+                    #     bot_id=current_bot_id,
+                    #     participant_id=participant_id,
+                    #     participant_name=participant_name,
+                    #     timestamp_absolute=ts_absolute,
+                    #     timestamp_relative=ts_relative,
+                    #     image_base64=buffer_b64,
+                    # )
                 except Exception as e:
                     logger.warning(f"Failed uniqueness/FPS check or buffer push: {e}")
 

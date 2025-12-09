@@ -7,7 +7,6 @@ from app.core.config import get_config
 
 logger = logging.getLogger(__name__)
 
-
 class SummaryStorage:
     """
     Manages file storage for transcripts, events, and summary.
