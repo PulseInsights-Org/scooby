@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 import os
 import logging
 import base64
 import io
+import asyncio
+import json
 from typing import Optional, Set, Dict
 
 from PIL import Image
@@ -74,6 +77,46 @@ async def get_latest_suggestion_text() -> Optional[str]:
         return None
     # SummaryStorage has helper to read latest suggestion block
     return await summary_storage.get_latest_suggestion()
+
+
+@router.get("/api/summary_stream")
+async def summary_stream():
+    """Server-Sent Events endpoint that streams the current summary when it changes.
+
+    This uses get_current_summary_text() as the single source of truth and
+    only emits an event when the summary content differs from the last sent
+    value. The check interval is small (2s) to keep latency low while
+    avoiding tight polling loops.
+    """
+
+    async def event_generator():
+        last_payload: Optional[str] = None
+        while True:
+            try:
+                raw_summary = await get_current_summary_text() or ""
+                lines = raw_summary.splitlines()
+                while lines and not lines[0].strip():
+                    lines.pop(0)
+                if lines and lines[0].startswith("Last Updated:"):
+                    lines.pop(0)
+                if lines and lines[0].startswith("="):
+                    lines.pop(0)
+                summary = "\n".join(lines).strip()
+
+                payload_dict = {
+                    "bot_id": current_bot_id,
+                    "summary": summary,
+                }
+                payload = json.dumps(payload_dict)
+
+                if payload != last_payload:
+                    last_payload = payload
+                    yield f"data: {payload}\n\n"
+            except Exception:
+                logger.exception("Error while generating summary SSE event")
+            await asyncio.sleep(2)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str) -> bool:
     """Simple check if this exact audio segment was already processed"""

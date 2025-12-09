@@ -12,22 +12,22 @@ router = APIRouter()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-
 class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
     x_org_name: str
     saveTranscript: bool = True
 
-
 class SlackChannelRequest(BaseModel):
     channel_id: str
-
 
 @router.get("/")
 async def bot_html(request: Request):
     return templates.TemplateResponse("bot.html", {"request": request})
 
+@router.get("/dashboard")
+async def dashboard_html(request: Request):
+    return templates.TemplateResponse("dashboard.html", {"request": request})
 
 @router.get("/api/config")
 async def get_frontend_config():
@@ -48,7 +48,6 @@ async def get_frontend_config():
         "publicBaseUrl": public_base_url
     }
 
-
 @router.post("/add_scooby")
 async def add_scooby_bot(body : MeetingRequest, request: Request):
     meeting_url = body.meeting_url
@@ -60,9 +59,7 @@ async def add_scooby_bot(body : MeetingRequest, request: Request):
         }
     return {"bot_id": bot_id}
 
-
 slack_client = CobaltSlackClient()
-
 
 @router.post("/summary")
 async def send_summary_to_slack(body: SlackChannelRequest):
@@ -72,7 +69,6 @@ async def send_summary_to_slack(body: SlackChannelRequest):
 
     await slack_client.send_message(body.channel_id, summary)
     return {"status": "sent", "type": "summary"}
-
 
 @router.post("/suggest")
 async def send_suggestion_to_slack(body: SlackChannelRequest):
