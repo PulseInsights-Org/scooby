@@ -84,6 +84,14 @@ async def get_latest_suggestion_text() -> Optional[str]:
     return await summary_storage.get_latest_suggestion()
 
 
+async def get_latest_screen_analysis_text() -> Optional[str]:
+    """Return the latest screen analysis text for the active meeting, if any."""
+    global summary_storage
+    if not summary_storage:
+        return None
+    return await summary_storage.get_latest_screen_analysis()
+
+
 @router.get("/api/summary_stream")
 async def summary_stream():
     """Server-Sent Events endpoint that streams the current summary when it changes.
@@ -226,6 +234,15 @@ async def _process_buffer_and_summarize():
             logger.info(f"Summarization suggestion: {suggestion}")
             if summary_storage:
                 await summary_storage.append_suggestion(suggestion)
+
+        # Persist screen analysis (if present) similar to suggestions
+        screen_analysis = result.get("screen_analysis")
+        if screen_analysis and summary_storage:
+            try:
+                await summary_storage.append_screen_analysis(screen_analysis)
+                logger.info("Saved screen analysis block to storage")
+            except Exception:
+                logger.exception("Error while appending screen analysis to storage")
 
         if not summary_storage:
             logger.warning("No summary storage available")

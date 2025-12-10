@@ -2,6 +2,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.tools import tool
+from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import ToolMessage, BaseMessage
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
 import logging
@@ -34,6 +36,13 @@ class MeetingOutput(BaseModel):
     events: List[EventExtraction] = Field(description="List of extracted events from this transcript segment")
     summary: str = Field(description="Complete updated meeting summary (MOM style)")
     suggestion: Optional[str] = Field(default=None, description="Optional suggestion generated using issue knowledge base; may be null")
+    screen_analysis: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional short summary of the most important information derived from "
+            "screenshare context in this segment (if any)."
+        ),
+    )
 
 class SummarizationService:
     """
@@ -107,11 +116,6 @@ class SummarizationService:
 
             try:
                 matches = store.search_similar_issues(query)
-                if not matches:
-                    if index_kind == "issues":
-                        return "No similar issues found in the knowledge base."
-                    else:
-                        return "No related previous meeting context found."
 
                 lines = []
                 for m in matches:
@@ -154,12 +158,15 @@ class SummarizationService:
 
             Args:
                 participant_name: Name of the participant (case-insensitive partial match).
-                timestamp_range: Relative time range exactly as in events file,
+                timestamp_range: Relative time range exactly as in the events/timeline,
                     e.g. "00:10-00:30" or "1:02:03-1:02:30".
 
             Returns a dict with:
                 - count: number of frames found
-                - s3_keys: list of S3 object keys for the matching frames
+                - frames: list of minimal frame metadata dictionaries, each including:
+                    - s3_key
+                    - timestamp_relative
+                    - participant_name
             """
 
             logger.info(
@@ -169,19 +176,22 @@ class SummarizationService:
 
             store = self.screenshare_metadata_store
             if not store:
-                return {"count": 0, "s3_keys": []}
+                return {"count": 0, "frames": []}
 
             def _parse_ts(value: str) -> float:
+                """Parse a relative timestamp string (SS, MM:SS, or H:MM:SS) into seconds."""
                 parts = value.strip().split(":")
                 parts = [p.strip() for p in parts if p.strip()]
                 if not parts:
                     return 0.0
                 if len(parts) == 1:
+                    # seconds
                     return float(parts[0])
                 if len(parts) == 2:
+                    # MM:SS
                     m, s = parts
                     return int(m) * 60 + float(s)
-                # H:MM:SS
+                # H:MM:SS (or longer, we only care about the last 3 units)
                 h, m, s = parts[-3], parts[-2], parts[-1]
                 return int(h) * 3600 + int(m) * 60 + float(s)
 
@@ -194,7 +204,11 @@ class SummarizationService:
                 end_rel = _parse_ts(end_str)
             except Exception as e:
                 logger.error(f"Error parsing timestamp range in get_screenshare_frames_by_time: {e}")
-                return {"count": 0, "s3_keys": []}
+                return {"count": 0, "frames": []}
+
+            # Normalize window in case caller swaps start/end
+            if end_rel < start_rel:
+                start_rel, end_rel = end_rel, start_rel
 
             records, count = store.query_frames_by_participant_and_window(
                 participant_name=participant_name,
@@ -202,16 +216,28 @@ class SummarizationService:
                 end_relative=end_rel,
             )
 
-            s3_keys = [r.get("s3_key") for r in records if r.get("s3_key")]
+            frames: List[Dict[str, Any]] = []
+            for r in records:
+                s3_key = r.get("s3_key")
+                if not s3_key:
+                    continue
+                frames.append(
+                    {
+                        "s3_key": s3_key,
+                        "timestamp_relative": r.get("timestamp_relative"),
+                        "participant_name": r.get("participant_name"),
+                    }
+                )
 
             logger.info(
-                f"[SummarizationService] get_screenshare_frames_by_time found {count} frames; "
-                f"first 5 keys: {s3_keys[:5]}"
+                f"[SummarizationService] get_screenshare_frames_by_time found {len(frames)} frames "
+                f"for participant_name={participant_name}, range_seconds=({start_rel}, {end_rel})"
             )
 
-            return {"count": count, "s3_keys": s3_keys}
+            return {"count": len(frames), "frames": frames}
 
         self.tools = [search_meeting_knowledge_base, get_screenshare_frames_by_time]
+        self.tool_registry = {tool.name: tool for tool in self.tools}
 
         # ------------------------------------------------------------
         # 3️⃣ Initialize LLM (event extraction + summary + suggestions)
@@ -230,8 +256,6 @@ class SummarizationService:
             ("human", "{input}\n\n{format_instructions}")
         ])
 
-        self.chain = self.prompt | self.llm | self.output_parser
-
         logger.info(f"Initialized SummarizationService with model: {self.config.model_name} and tool-enabled LLM")
 
     def _get_system_prompt(self) -> str:
@@ -244,26 +268,39 @@ class SummarizationService:
    - Aggregate related statements into coherent events
    - Not just plain conversational text, but actionable/notable items
 
-2. **Generate Global Summary**: Create/update a complete meeting summary (Minutes of Meeting style)
+2. **Use Screenshare Context When Relevant**:
+   - When participants talk about what is on the screen, screen sharing, slides, dashboards, code, or UIs,
+     you may call the `get_screenshare_frames_by_time` tool.
+   - Pass the speaking participant's name and the time range for the event's timestamp.
+   - The tool returns metadata for frames (S3 keys and timestamps). You do **not** see the raw images,
+     but you should conceptually treat them as additional visual context about what is being shown.
+   - When you infer that a visual element is important (e.g. an error log, dashboard graph, PR diff, design
+     mock, architecture diagram), explicitly mention that visual context in the event description and summary,
+     phrased in natural language (e.g. "On screen, they reviewed the error log showing 500s on /checkout").
+   - Additionally, if there is any meaningful screenshare-related insight in this segment, write a concise,
+     human-readable summary of those visual insights into the `screen_analysis` field of the JSON output
+     (1–3 short paragraphs max). If there is no relevant screenshare context, set `screen_analysis` to null.
+
+3. **Generate Global Summary**: Create/update a complete meeting summary (Minutes of Meeting style)
    - Concise, professional, plain English
    - If previous summary provided, UPDATE it with new information (don't just append)
    - Maintain chronological flow
    - Focus on: key topics, decisions made, action items, next steps
    - Remove redundancy - integrate new info into existing context
 
-3. **Classify Event Type**
+4. **Classify Event Type**
    - For each event, set `event_type` to one of:
      - `"issue-related"` for technical issues/blockers/logs, integration failures, debugging/troubleshooting topics
      - `"MoM-event"` for events that clearly refer to previous meeting context (e.g. what was decided last time, follow-ups from earlier meetings)
      - `"general-event"` for everything else
 
-4. **Issue Knowledge Base Suggestions (ONLY if issue-related events exist)**
+5. **Issue Knowledge Base Suggestions (ONLY if issue-related events exist)**
    - If at least one event has `event_type = "issue-related"`:
       - Conceptually search the issues knowledge base using the issue event description as the query.
       - Use the retrieved similar issues/solutions to generate a concrete, actionable suggestion.
       - Put the final suggestion text in the `suggestion` field of the output.
 
-5. **MoM / Previous Meeting Context Suggestions (ONLY if MoM-events exist)**
+6. **MoM / Previous Meeting Context Suggestions (ONLY if MoM-events exist)**
    - If at least one event has `event_type = "MoM-event"`:
       - Conceptually search the previous meeting MoM index using the event description as the query.
       - Use the retrieved previous-meeting context to refine the event description and update the global summary accordingly.
@@ -349,14 +386,29 @@ Guidelines:
 
                 format_instructions = self.output_parser.get_format_instructions()
 
-                # Invoke chain (LLM handles events, summary, and suggestion in one pass)
-                result = await self.chain.ainvoke({
-                    "input": input_text,
-                    "format_instructions": format_instructions,
-                })
+                messages = self.prompt.format_messages(
+                    input=input_text,
+                    format_instructions=format_instructions,
+                )
+
+                ai_message = await self._invoke_with_tools(messages)
+                raw_output_text = self._coerce_message_content(ai_message)
+
+                # Log the raw output for debugging
+                logger.debug(f"[Screenshare Debug] Raw LLM output: {raw_output_text}")
+                
+                # Parse structured response (events, summary, suggestion, screen_analysis)
+                try:
+                    result = self.output_parser.parse(raw_output_text)
+                    logger.debug(f"[Screenshare Debug] Parsed result: {json.dumps(result, indent=2)}")
+                except Exception as e:
+                    logger.error(f"[Screenshare Debug] Error parsing LLM output: {e}")
+                    raise
 
                 if not isinstance(result, dict):
-                    raise ValueError(f"Expected dict, got {type(result)}")
+                    error_msg = f"Expected dict, got {type(result)}"
+                    logger.error(f"[Screenshare Debug] {error_msg}")
+                    raise ValueError(error_msg)
 
                 if "events" not in result or "summary" not in result:
                     raise ValueError(f"Missing required keys in result: {result.keys()}")
@@ -420,13 +472,53 @@ Guidelines:
                 elif "suggestion" not in result:
                     result["suggestion"] = None
 
-                logger.info(
-                    f"Extracted {len(result['events'])} events, "
-                    f"summary length: {len(result['summary'])} chars, "
-                    f"suggestion present: {result['suggestion'] is not None}"
-                )
+                # Log screenshare analysis status
+                screen_analysis = result.get('screen_analysis')
+                if screen_analysis:
+                    logger.info(
+                        f"Extracted {len(result['events'])} events, "
+                        f"summary length: {len(result['summary'])} chars, "
+                        f"suggestion present: {result['suggestion'] is not None}, "
+                        f"screenshare analysis: {len(screen_analysis)} chars"
+                    )
+                    logger.debug(f"[Screenshare Debug] Screenshare analysis content: {screen_analysis}")
+                else:
+                    logger.info(
+                        f"Extracted {len(result['events'])} events, "
+                        f"summary length: {len(result['summary'])} chars, "
+                        f"suggestion present: {result['suggestion'] is not None}, "
+                        "no screenshare analysis in this segment"
+                    )
+                    
+                    # Log if there were any tool calls that might be related to screenshares
+                    if hasattr(ai_message, 'tool_calls') and ai_message.tool_calls:
+                        tool_names = [t.get('name', 'unknown') for t in ai_message.tool_calls]
+                        logger.debug(f"[Screenshare Debug] Tool calls in this segment: {tool_names}")
+                        if 'get_screenshare_frames_by_time' in tool_names:
+                            logger.debug("[Screenshare Debug] Screenshare tool was called but no analysis was returned")
 
                 return result
+
+            except OutputParserException as e:
+                raw_output = getattr(e, "llm_output", "") or ""
+                logger.error(
+                    f"Output parser error (attempt {attempt + 1}/{max_retries}): {e}; "
+                    "trying to recover raw LLM output."
+                )
+                recovered = self._recover_structured_output(raw_output)
+                if recovered:
+                    logger.info(
+                        "[SummarizationService] Successfully recovered structured output "
+                        "after parser failure."
+                    )
+                    return recovered
+
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.exception("All attempts failed - Output parser errors")
+                    return self._create_fallback_output(transcript_items, previous_summary)
 
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing error (attempt {attempt + 1}/{max_retries}): {e}")
@@ -437,17 +529,186 @@ Guidelines:
                     logger.exception("All attempts failed - JSON parsing error")
                     return self._create_fallback_output(transcript_items, previous_summary)
 
-            except Exception as e:
-                logger.error(f"Processing attempt {attempt + 1}/{max_retries} failed: {e}")
+    def _recover_structured_output(self, raw_text: str) -> Optional[Dict[str, Any]]:
+        """
+        Attempt to salvage structured JSON from an invalid LLM response by
+        stripping code fences and isolating the outermost JSON object.
+        """
+        if not raw_text:
+            return None
 
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
+        text = raw_text.strip()
+        if not text:
+            return None
+
+        if text.startswith("```"):
+            text = text[3:]
+            text = text.lstrip()
+            if text.lower().startswith("json"):
+                text = text[4:].lstrip()
+            closing = text.rfind("```")
+            if closing != -1:
+                text = text[:closing]
+
+        first = text.find("{")
+        last = text.rfind("}")
+        if first == -1 or last == -1 or last <= first:
+            return None
+
+        candidate = text[first : last + 1]
+        try:
+            parsed_json = json.loads(candidate)
+            meeting_output = MeetingOutput(**parsed_json)
+            return meeting_output.model_dump()
+        except Exception as parse_err:
+            logger.error(f"Failed to recover structured output from LLM response: {parse_err}")
+            return None
+
+    async def _invoke_with_tools(self, messages: List[BaseMessage]) -> BaseMessage:
+        """
+        Invoke the LLM with tool calling support.
+        
+        Args:
+            messages: List of messages to send to the LLM
+            
+        Returns:
+            The final message from the LLM after processing any tool calls
+        """
+        current_messages = messages
+        max_iterations = 5  # Prevent infinite loops
+        
+        for _ in range(max_iterations):
+            # Invoke the LLM with the current messages
+            response = await self.llm.ainvoke(current_messages)
+            
+        # If there are no tool calls, we're done
+        if not hasattr(response, 'tool_calls') or not response.tool_calls:
+            return response
+            
+        # Process tool calls
+        tool_messages = []
+        for tool_call in response.tool_calls:
+            tool_name = tool_call['name']
+            tool_args = tool_call.get('args', {})
+                    
+            # Log the original tool call
+            logger.debug(f"Processing tool call: {tool_name} with args: {tool_args}")
+                    
+            # Handle parameter name mismatches for each tool
+            processed_args = {}
+            if tool_name == 'get_screenshare_frames_by_time':
+                # Tool schema expects: participant_name, timestamp_range
+                # Accept aliases from the LLM and map them into the correct names.
+                if 'participant_name' in tool_args:
+                    processed_args['participant_name'] = tool_args['participant_name']
+                elif 'participant_id' in tool_args:
+                    # Some prompts may encourage the LLM to send participant_id
+                    processed_args['participant_name'] = tool_args['participant_id']
+
+                if 'timestamp_range' in tool_args:
+                    processed_args['timestamp_range'] = tool_args['timestamp_range']
+                elif 'time_range' in tool_args:
+                    # Our earlier attempt renamed this incorrectly; keep the
+                    # key as timestamp_range to satisfy the tool's schema.
+                    processed_args['timestamp_range'] = tool_args['time_range']
+
+                # Pass through any extra keys just in case, but do not rename
+                # away from the required schema fields.
+                for k, v in tool_args.items():
+                    if k not in processed_args:
+                        processed_args[k] = v
+
+            elif tool_name == 'search_meeting_knowledge_base':
+                # Tool schema expects: query, event_type
+                # Map various query key variants back to query.
+                if 'query' in tool_args:
+                    processed_args['query'] = tool_args['query']
+                elif 'query_text' in tool_args:
+                    processed_args['query'] = tool_args['query_text']
+                elif 'queryText' in tool_args:
+                    processed_args['query'] = tool_args['queryText']
+
+                # event_type is optional but supported; keep the same name.
+                if 'event_type' in tool_args:
+                    processed_args['event_type'] = tool_args['event_type']
+                elif 'eventType' in tool_args:
+                    processed_args['event_type'] = tool_args['eventType']
+
+                # Include any additional keys without renaming required ones.
+                for k, v in tool_args.items():
+                    if k not in processed_args:
+                        processed_args[k] = v
+            else:
+                # For other tools, pass through all arguments as-is
+                processed_args = tool_args
+                    
+            if tool_name not in self.tool_registry:
+                error_msg = f"Unknown tool: {tool_name}"
+                logger.error(error_msg)
+                tool_messages.append(ToolMessage(
+                    content=error_msg,
+                    tool_call_id=tool_call['id']
+                ))
+                continue
+                        
+            try:
+                tool_func = self.tool_registry[tool_name]
+                logger.debug(f"Calling tool {tool_name} with processed args: {processed_args}")
+                        
+                # Use invoke() instead of direct call to handle both sync and async tools
+                if asyncio.iscoroutinefunction(tool_func.invoke if hasattr(tool_func, 'invoke') else tool_func):
+                    if hasattr(tool_func, 'invoke'):
+                        tool_result = await tool_func.invoke(processed_args)
+                    else:
+                        tool_result = await tool_func(**processed_args)
                 else:
-                    logger.exception("All processing attempts failed")
-                    return self._create_fallback_output(transcript_items, previous_summary)
+                    if hasattr(tool_func, 'invoke'):
+                        tool_result = tool_func.invoke(processed_args)
+                    else:
+                        tool_result = tool_func(**processed_args)
+                        
+                if not isinstance(tool_result, str):
+                    tool_result = str(tool_result)
+                        
+                tool_messages.append(ToolMessage(
+                    content=tool_result,
+                    tool_call_id=tool_call['id']
+                ))
+            except Exception as e:
+                logger.error(f"Error calling tool {tool_name}: {e}")
+                tool_messages.append(ToolMessage(
+                    content=f"Error calling tool {tool_name}: {str(e)}",
+                    tool_call_id=tool_call['id']
+                ))
+            
+            # Add the tool responses to the message history
+            current_messages = current_messages + [response] + tool_messages
+        
+        # If we get here, we've reached max iterations
+        logger.warning(f"Reached max iterations ({max_iterations}) in tool calling loop")
+        return current_messages[-1]  # Return the last message
 
-        return self._create_fallback_output(transcript_items, previous_summary)
+    def _coerce_message_content(self, message: Any) -> str:
+        """
+        Extract content from a message object, handling different message types.
+        
+        Args:
+            message: The message object from the LLM
+            
+        Returns:
+            The message content as a string
+        """
+        if hasattr(message, 'content') and message.content:
+            if isinstance(message.content, str):
+                return message.content
+            if hasattr(message.content, 'as_string'):
+                return message.content.as_string()
+            return str(message.content)
+        elif hasattr(message, 'text'):
+            return message.text
+        elif hasattr(message, 'response'):
+            return self._coerce_message_content(message.response)
+        return str(message)
 
     def _create_fallback_output(
         self,
@@ -467,8 +728,18 @@ Guidelines:
                 "person": item.speaker
             })
 
-        fallback_addition = f"\n\n[Auto-generated] Segment with {len(transcript_items)} items from speakers: {', '.join(speakers)}"
-        updated_summary = (previous_summary or "") + fallback_addition
+        # If we already have a previous summary, keep it as-is to avoid
+        # repeatedly appending noisy auto-generated markers.
+        if previous_summary:
+            updated_summary = previous_summary.strip()
+        else:
+            # Only add a single lightweight auto-generated note when there
+            # was no prior summary at all.
+            fallback_addition = (
+                f"[Auto-generated] Summary placeholder for a segment with "
+                f"{len(transcript_items)} items from speakers: {', '.join(speakers)}"
+            )
+            updated_summary = fallback_addition
 
         return {
             "events": events,

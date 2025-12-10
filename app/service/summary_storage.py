@@ -47,12 +47,18 @@ class SummaryStorage:
             self.summaries_dir,
             f"{org_name}_{meeting_id}_suggestions.txt",
         )
+        # Screen analysis file (for screenshare-related analysis text)
+        self.screen_analysis_path = os.path.join(
+            self.summaries_dir,
+            f"{org_name}_{meeting_id}_screen_analysis.txt",
+        )
 
         logger.info(f"SummaryStorage initialized for {org_name}_{meeting_id}")
         logger.info(f"Transcript path: {self.transcript_path}")
         logger.info(f"Events path: {self.events_path}")
         logger.info(f"Summary path: {self.summary_path}")
         logger.info(f"Suggestions path: {self.suggestions_path}")
+        logger.info(f"Screen analysis path: {self.screen_analysis_path}")
 
     async def save_transcript_line(
         self,
@@ -125,11 +131,12 @@ class SummaryStorage:
             summary: Complete updated meeting summary (MOM)
         """
         try:
+            clean_summary = self._strip_summary_header(summary)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             header = f"=== MEETING SUMMARY (Minutes of Meeting) ===\n"
             header += f"Last Updated: {timestamp}\n"
             header += f"{'='*60}\n\n"
-            content = summary + "\n"
+            content = clean_summary.strip() + "\n"
 
             async with aiofiles.open(self.summary_path, 'w', encoding='utf-8') as f:
                 await f.write(header)
@@ -187,6 +194,55 @@ class SummaryStorage:
             logger.exception(f"Error reading latest suggestion: {e}")
             return None
 
+    async def append_screen_analysis(self, analysis: str) -> None:
+        """Append a screen analysis block to the screen analysis file in summaries dir."""
+        try:
+            if not analysis:
+                return
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            header = f"\n=== SCREEN ANALYSIS @ {timestamp} ===\n"
+            content = header + analysis.strip() + "\n"
+
+            async with aiofiles.open(self.screen_analysis_path, "a", encoding="utf-8") as f:
+                await f.write(content)
+
+            logger.info(
+                f"Appended screen analysis to {self.screen_analysis_path} ({len(analysis)} chars)"
+            )
+
+        except Exception as e:
+            logger.exception(f"Error appending screen analysis: {e}")
+
+    async def get_latest_screen_analysis(self) -> Optional[str]:
+        """Return the latest screen analysis block if available."""
+        try:
+            if not os.path.exists(self.screen_analysis_path):
+                return None
+
+            async with aiofiles.open(self.screen_analysis_path, "r", encoding="utf-8") as f:
+                content = await f.read()
+
+            if not content.strip():
+                return None
+
+            lines = content.split("\n")
+            last_header_index = -1
+            for idx, line in enumerate(lines):
+                if line.startswith("=== SCREEN ANALYSIS @"):
+                    last_header_index = idx
+
+            if last_header_index == -1:
+                return content.strip()
+
+            analysis_lines = lines[last_header_index + 1 :]
+            analysis_text = "\n".join(analysis_lines).strip()
+            return analysis_text or None
+
+        except Exception as e:
+            logger.exception(f"Error reading latest screen analysis: {e}")
+            return None
+
     async def get_current_summary(self) -> Optional[str]:
         """
         Read the current global summary from summary file
@@ -205,20 +261,7 @@ class SummaryStorage:
             if not content.strip():
                 return None
 
-            # Skip header lines and get actual summary
-            lines = content.split('\n')
-            summary_lines = []
-            skip_header = True
-
-            for line in lines:
-                if skip_header:
-                    # Skip until we pass the header separator
-                    if line.startswith('='):
-                        skip_header = False
-                    continue
-                summary_lines.append(line)
-
-            summary = '\n'.join(summary_lines).strip()
+            summary = self._strip_summary_header(content)
             if summary:
                 logger.debug(f"Retrieved current summary ({len(summary)} chars)")
                 return summary
@@ -258,3 +301,34 @@ class SummaryStorage:
     def get_events_path(self) -> str:
         """Get events file path"""
         return self.events_path
+
+    def _strip_summary_header(self, text: str) -> str:
+        """
+        Remove storage header metadata from a summary blob if it exists.
+
+        The stored summary files include a standard header block with title,
+        last-updated timestamp, and separators. This helper removes those
+        lines so the caller receives only the human-written summary content.
+        """
+        if not text:
+            return text
+
+        lines = text.splitlines()
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx].strip()
+            if not line:
+                idx += 1
+                continue
+            if line.startswith("=== MEETING SUMMARY"):
+                idx += 1
+                continue
+            if line.startswith("Last Updated:"):
+                idx += 1
+                continue
+            if set(line) == {"="}:
+                idx += 1
+                continue
+            break
+
+        return "\n".join(lines[idx:]).strip()
