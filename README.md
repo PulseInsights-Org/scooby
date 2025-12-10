@@ -30,54 +30,14 @@ cp .env.example .env
 
 **Required Environment Variables:**
 
-```env
-# Recall.ai (Required - for meeting bot integration)
-RECALL_API_KEY=your_recall_api_key_here
+refer to the .env.example file for more information
 
-# OpenAI (Required - for AI summarization)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Pinecone (Required - for vector search)
-PINECONE_API_KEY=your_pinecone_api_key_here
-
-# Neo4j (Required - for knowledge graph)
-NEO4J_URI=your_neo4j_uri_here
-NEO4J_USER=your_neo4j_username_here
-NEO4J_PASSWORD=your_neo4j_password_here
-```
-
-**Optional Configuration:**
-
-```env
-# Supabase (Optional - for transcript storage)
-SUPABASE_URL=your_supabase_url_here
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
-SUPABASE_ANON_KEY=your_supabase_anon_key_here
-
-# Summarization Settings (Optional - defaults shown)
-SUMMARIZATION_BUFFER_MAX_ITEMS=7
-SUMMARIZATION_BUFFER_MAX_SECONDS=15.0
-SUMMARIZATION_MODEL=gpt-4o-mini
-
-# Inactivity Monitor (Optional - defaults shown)
-SCOOBY_INACTIVITY_POLL_SECONDS=10
-SCOOBY_NO_PARTICIPANTS_GRACE_SECONDS=120
-SCOOBY_NO_TRANSCRIPTS_GRACE_SECONDS=300
-```
 
 ### 2. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
-
-**Key Dependencies:**
-- `fastapi` - Web framework
-- `langchain==0.3.0` - LangChain 1.0 for AI orchestration
-- `langchain-openai` - OpenAI integration
-- `openai>=1.0.0` - OpenAI API client
-- `pinecone` - Vector database
-- `neo4j` - Graph database
 
 ### 3. Run the Server
 
@@ -141,12 +101,21 @@ Each summary maintains context from previous summaries:
 
 ## API Endpoints
 
-### Add Scooby Bot
+### Scooby Dashboard
 
 **Endpoint:**
 
 ```
-POST /add_scooby
+1. POST /dashboard
+```
+
+### Add Scooby Bot
+
+**Endpoint:**
+
+
+```
+2. POST /add_scooby
 ```
 
 **Request Body:**

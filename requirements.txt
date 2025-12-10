@@ -17,4 +17,3 @@ ImageHash
 redis
 boto3
 supabase
-google-generativeai
