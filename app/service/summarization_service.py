@@ -34,7 +34,7 @@ class MeetingOutput(BaseModel):
     events: List[EventExtraction] = Field(description="List of extracted events from this transcript segment")
     summary: str = Field(description="Complete updated meeting summary (MOM style)")
     suggestion: Optional[str] = Field(default=None, description="Optional suggestion generated using issue knowledge base; may be null")
-
+    
 class SummarizationService:
     """
     LangChain-based service for extracting events and generating global summary.

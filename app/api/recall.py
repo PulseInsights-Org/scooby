@@ -63,7 +63,6 @@ transcript_writer = TranscriptWriter(
 
 ti = TranscriptIngestion(org_name="")
 
-
 def get_active_bot_id() -> Optional[str]:
     """Return the currently active Recall bot id, if any."""
     return current_bot_id
@@ -319,12 +318,11 @@ async def recall_realtime_websocket(websocket: WebSocket):
                 if not current_x_org_name or not current_bot_id:
                     continue
 
-                # Downsample FPS to ~1 frame every 2 seconds per participant
+                # Downsample FPS to ~1 frame every 1 seconds per participant
                 key = f"{current_bot_id}:{participant_id}"
                 if ts_relative is not None:
                     last_ts = participant_last_ts.get(key)
                     if last_ts is not None and (ts_relative - last_ts) < 1.0:
-                        # Skip frames that are too close in time
                         continue
 
                 try:

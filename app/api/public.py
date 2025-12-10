@@ -8,6 +8,7 @@ from app.api.recall import add_bot, get_current_summary_text, get_latest_suggest
 from app.core.config import get_config
 from app.service.cobalt_slack_client import CobaltSlackClient
 from app.service.screen_analysis_service import ScreenAnalysisService
+from app.service.recall_bot import RecallBot
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,18 @@ router = APIRouter()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
+config = get_config()
+rb = RecallBot(config)
+
 class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
     x_org_name: str
     saveTranscript: bool = True
+
+
+class RemoveBotRequest(BaseModel):
+    bot_id: str
 
 class SlackChannelRequest(BaseModel):
     channel_id: str
@@ -52,6 +60,12 @@ async def get_frontend_config():
         "publicBaseUrl": public_base_url
     }
 
+
+@router.get("/api/bot_status")
+async def get_bot_status():
+    bot_id = get_active_bot_id()
+    return {"bot_id": bot_id, "active": bool(bot_id)}
+
 @router.post("/add_scooby")
 async def add_scooby_bot(body : MeetingRequest, request: Request):
     meeting_url = body.meeting_url
@@ -62,6 +76,12 @@ async def add_scooby_bot(body : MeetingRequest, request: Request):
             "message": "Scooby Bot already exists, Please remove and try again"
         }
     return {"bot_id": bot_id}
+
+
+@router.post("/remove_scooby")
+async def remove_scooby_bot(body: RemoveBotRequest):
+    result = await rb.handle_bot_removal(body.bot_id)
+    return result
 
 slack_client = CobaltSlackClient()
 screen_analysis_service = ScreenAnalysisService()

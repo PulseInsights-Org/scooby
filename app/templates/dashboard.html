@@ -151,9 +151,14 @@
             <input id="saveTranscript" type="checkbox" checked />
             <label for="saveTranscript" style="font-size: 13px; color: #4b5563;">Enable transcript & summary generation</label>
         </div>
-        <button id="addScoobyBtn" class="primary-btn">
-            <span>+ Add Scooby to Meeting</span>
-        </button>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
+            <button id="addScoobyBtn" class="primary-btn">
+                <span>+ Add Scooby to Meeting</span>
+            </button>
+            <button id="removeScoobyBtn" class="primary-btn" style="background: linear-gradient(135deg, #dc2626, #f97316);">
+                <span>Remove Scooby from Meeting</span>
+            </button>
+        </div>
         <div id="addScoobyStatus" class="status-text"></div>
     </div>
 
