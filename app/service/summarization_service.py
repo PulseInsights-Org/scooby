@@ -36,14 +36,7 @@ class MeetingOutput(BaseModel):
     events: List[EventExtraction] = Field(description="List of extracted events from this transcript segment")
     summary: str = Field(description="Complete updated meeting summary (MOM style)")
     suggestion: Optional[str] = Field(default=None, description="Optional suggestion generated using issue knowledge base; may be null")
-    screen_analysis: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional short summary of the most important information derived from "
-            "screenshare context in this segment (if any)."
-        ),
-    )
-
+    
 class SummarizationService:
     """
     LangChain-based service for extracting events and generating global summary.
@@ -55,8 +48,8 @@ class SummarizationService:
         # ------------------------------------------------------------
         # 1️⃣ Load Pinecone Stores (issues + MoM)
         # ------------------------------------------------------------
-        issues_index_name = "global-issues"
-        mom_index_name = "meeting-summaries"
+        issues_index_name = "vc-global-issues"
+        mom_index_name = "vc-meeting-summaries"
 
         self.issues_pinecone_store: Optional[VectoreStore] = None
         self.mom_pinecone_store: Optional[VectoreStore] = None
@@ -149,94 +142,7 @@ class SummarizationService:
                     return f"Error while searching MoM meeting index: {e}"
                 return f"Error while searching meeting knowledge base: {e}"
 
-        @tool
-        def get_screenshare_frames_by_time(
-            participant_name: str,
-            timestamp_range: str,
-        ) -> Dict[str, Any]:
-            """Fetch screenshare frames for a participant within a relative time window.
-
-            Args:
-                participant_name: Name of the participant (case-insensitive partial match).
-                timestamp_range: Relative time range exactly as in the events/timeline,
-                    e.g. "00:10-00:30" or "1:02:03-1:02:30".
-
-            Returns a dict with:
-                - count: number of frames found
-                - frames: list of minimal frame metadata dictionaries, each including:
-                    - s3_key
-                    - timestamp_relative
-                    - participant_name
-            """
-
-            logger.info(
-                f"[SummarizationService] Tool 'get_screenshare_frames_by_time' invoked with "
-                f"participant_name={participant_name}, range={timestamp_range}"
-            )
-
-            store = self.screenshare_metadata_store
-            if not store:
-                return {"count": 0, "frames": []}
-
-            def _parse_ts(value: str) -> float:
-                """Parse a relative timestamp string (SS, MM:SS, or H:MM:SS) into seconds."""
-                parts = value.strip().split(":")
-                parts = [p.strip() for p in parts if p.strip()]
-                if not parts:
-                    return 0.0
-                if len(parts) == 1:
-                    # seconds
-                    return float(parts[0])
-                if len(parts) == 2:
-                    # MM:SS
-                    m, s = parts
-                    return int(m) * 60 + float(s)
-                # H:MM:SS (or longer, we only care about the last 3 units)
-                h, m, s = parts[-3], parts[-2], parts[-1]
-                return int(h) * 3600 + int(m) * 60 + float(s)
-
-            # Expect range in form "start-end", both sides using the same
-            # relative timestamp format as in the events file (e.g. "00:10-00:30").
-            try:
-                range_str = timestamp_range.strip()
-                start_str, end_str = [p.strip() for p in range_str.split("-", 1)]
-                start_rel = _parse_ts(start_str)
-                end_rel = _parse_ts(end_str)
-            except Exception as e:
-                logger.error(f"Error parsing timestamp range in get_screenshare_frames_by_time: {e}")
-                return {"count": 0, "frames": []}
-
-            # Normalize window in case caller swaps start/end
-            if end_rel < start_rel:
-                start_rel, end_rel = end_rel, start_rel
-
-            records, count = store.query_frames_by_participant_and_window(
-                participant_name=participant_name,
-                start_relative=start_rel,
-                end_relative=end_rel,
-            )
-
-            frames: List[Dict[str, Any]] = []
-            for r in records:
-                s3_key = r.get("s3_key")
-                if not s3_key:
-                    continue
-                frames.append(
-                    {
-                        "s3_key": s3_key,
-                        "timestamp_relative": r.get("timestamp_relative"),
-                        "participant_name": r.get("participant_name"),
-                    }
-                )
-
-            logger.info(
-                f"[SummarizationService] get_screenshare_frames_by_time found {len(frames)} frames "
-                f"for participant_name={participant_name}, range_seconds=({start_rel}, {end_rel})"
-            )
-
-            return {"count": len(frames), "frames": frames}
-
-        self.tools = [search_meeting_knowledge_base, get_screenshare_frames_by_time]
+        self.tools = [search_meeting_knowledge_base]
         self.tool_registry = {tool.name: tool for tool in self.tools}
 
         # ------------------------------------------------------------
@@ -268,20 +174,7 @@ class SummarizationService:
    - Aggregate related statements into coherent events
    - Not just plain conversational text, but actionable/notable items
 
-2. **Use Screenshare Context When Relevant**:
-   - When participants talk about what is on the screen, screen sharing, slides, dashboards, code, or UIs,
-     you may call the `get_screenshare_frames_by_time` tool.
-   - Pass the speaking participant's name and the time range for the event's timestamp.
-   - The tool returns metadata for frames (S3 keys and timestamps). You do **not** see the raw images,
-     but you should conceptually treat them as additional visual context about what is being shown.
-   - When you infer that a visual element is important (e.g. an error log, dashboard graph, PR diff, design
-     mock, architecture diagram), explicitly mention that visual context in the event description and summary,
-     phrased in natural language (e.g. "On screen, they reviewed the error log showing 500s on /checkout").
-   - Additionally, if there is any meaningful screenshare-related insight in this segment, write a concise,
-     human-readable summary of those visual insights into the `screen_analysis` field of the JSON output
-     (1–3 short paragraphs max). If there is no relevant screenshare context, set `screen_analysis` to null.
-
-3. **Generate Global Summary**: Create/update a complete meeting summary (Minutes of Meeting style)
+2. **Generate Global Summary**: Create/update a complete meeting summary (Minutes of Meeting style)
    - Concise, professional, plain English
    - If previous summary provided, UPDATE it with new information (don't just append)
    - Maintain chronological flow
@@ -294,13 +187,13 @@ class SummarizationService:
      - `"MoM-event"` for events that clearly refer to previous meeting context (e.g. what was decided last time, follow-ups from earlier meetings)
      - `"general-event"` for everything else
 
-5. **Issue Knowledge Base Suggestions (ONLY if issue-related events exist)**
+4. **Issue Knowledge Base Suggestions (ONLY if issue-related events exist)**
    - If at least one event has `event_type = "issue-related"`:
       - Conceptually search the issues knowledge base using the issue event description as the query.
       - Use the retrieved similar issues/solutions to generate a concrete, actionable suggestion.
       - Put the final suggestion text in the `suggestion` field of the output.
 
-6. **MoM / Previous Meeting Context Suggestions (ONLY if MoM-events exist)**
+5. **MoM / Previous Meeting Context Suggestions (ONLY if MoM-events exist)**
    - If at least one event has `event_type = "MoM-event"`:
       - Conceptually search the previous meeting MoM index using the event description as the query.
       - Use the retrieved previous-meeting context to refine the event description and update the global summary accordingly.
@@ -489,13 +382,19 @@ Guidelines:
                         f"suggestion present: {result['suggestion'] is not None}, "
                         "no screenshare analysis in this segment"
                     )
-                    
                     # Log if there were any tool calls that might be related to screenshares
                     if hasattr(ai_message, 'tool_calls') and ai_message.tool_calls:
                         tool_names = [t.get('name', 'unknown') for t in ai_message.tool_calls]
-                        logger.debug(f"[Screenshare Debug] Tool calls in this segment: {tool_names}")
+                        logger.debug("[Screenshare Debug] Tool calls in this segment: %s", tool_names)
                         if 'get_screenshare_frames_by_time' in tool_names:
-                            logger.debug("[Screenshare Debug] Screenshare tool was called but no analysis was returned")
+                            logger.debug(
+                                "[Screenshare Debug] Screenshare tool was called but LLM still returned no screen_analysis"
+                            )
+                    else:
+                        logger.info(
+                            "[Screenshare Debug] No tools were invoked by the LLM for this segment; "
+                            "screen_analysis is therefore based solely on transcript text and is currently null."
+                        )
 
                 return result
 
@@ -580,7 +479,13 @@ Guidelines:
         for _ in range(max_iterations):
             # Invoke the LLM with the current messages
             response = await self.llm.ainvoke(current_messages)
-            
+            # Log tool-call summary at INFO for observability
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                tool_names = [tc.get('name', 'unknown') for tc in response.tool_calls]
+                logger.info(
+                    "[SummarizationService] LLM requested tools: %s", tool_names
+                )
+
         # If there are no tool calls, we're done
         if not hasattr(response, 'tool_calls') or not response.tool_calls:
             return response
@@ -592,7 +497,11 @@ Guidelines:
             tool_args = tool_call.get('args', {})
                     
             # Log the original tool call
-            logger.debug(f"Processing tool call: {tool_name} with args: {tool_args}")
+            logger.info(
+                "[SummarizationService] Processing tool call '%s' with raw args: %s",
+                tool_name,
+                tool_args,
+            )
                     
             # Handle parameter name mismatches for each tool
             processed_args = {}
@@ -653,7 +562,11 @@ Guidelines:
                         
             try:
                 tool_func = self.tool_registry[tool_name]
-                logger.debug(f"Calling tool {tool_name} with processed args: {processed_args}")
+                logger.info(
+                    "[SummarizationService] Calling tool '%s' with processed args: %s",
+                    tool_name,
+                    processed_args,
+                )
                         
                 # Use invoke() instead of direct call to handle both sync and async tools
                 if asyncio.iscoroutinefunction(tool_func.invoke if hasattr(tool_func, 'invoke') else tool_func):
@@ -669,6 +582,11 @@ Guidelines:
                         
                 if not isinstance(tool_result, str):
                     tool_result = str(tool_result)
+                logger.info(
+                    "[SummarizationService] Tool '%s' completed. Result length: %d chars",
+                    tool_name,
+                    len(tool_result),
+                )
                         
                 tool_messages.append(ToolMessage(
                     content=tool_result,

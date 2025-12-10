@@ -23,6 +23,7 @@ from app.core.config import get_config
 from app.service.screenshare_buffer import ScreenshareRedisBuffer
 from app.service.screenshare_s3 import ScreenshareS3
 from app.service.screenshare_storage import ScreenshareStorage
+from app.service.screen_analysis_service import ScreenAnalysisService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ bot_context = BotContext()
 screenshare_buffer = ScreenshareRedisBuffer()
 screenshare_s3 = ScreenshareS3()
 screenshare_storage = ScreenshareStorage()
+screen_analysis_service = ScreenAnalysisService()
 
 current_bot_id = None
 current_meeting_url = None
@@ -62,7 +64,6 @@ transcript_writer = TranscriptWriter(
 )
 
 ti = TranscriptIngestion(org_name="")
-
 
 def get_active_bot_id() -> Optional[str]:
     """Return the currently active Recall bot id, if any."""
@@ -90,6 +91,22 @@ async def get_latest_screen_analysis_text() -> Optional[str]:
     if not summary_storage:
         return None
     return await summary_storage.get_latest_screen_analysis()
+
+
+async def run_vision_screen_analysis_for_active_meeting() -> Optional[str]:
+    """Run vision-based screen analysis for the currently active meeting, if any.
+
+    This uses ScreenAnalysisService to inspect the latest screenshare-related
+    event and associated frames in Redis for the active bot.
+    """
+    global summary_storage
+    if not current_bot_id or not summary_storage:
+        return None
+
+    return await screen_analysis_service.analyze_latest_screenshare(
+        bot_id=current_bot_id,
+        storage=summary_storage,
+    )
 
 
 @router.get("/api/summary_stream")
@@ -336,12 +353,11 @@ async def recall_realtime_websocket(websocket: WebSocket):
                 if not current_x_org_name or not current_bot_id:
                     continue
 
-                # Downsample FPS to ~1 frame every 2 seconds per participant
+                # Downsample FPS to ~1 frame every 1 seconds per participant
                 key = f"{current_bot_id}:{participant_id}"
                 if ts_relative is not None:
                     last_ts = participant_last_ts.get(key)
                     if last_ts is not None and (ts_relative - last_ts) < 1.0:
-                        # Skip frames that are too close in time
                         continue
 
                 try:
