@@ -127,12 +127,21 @@
                 }
 
                 let summaryText = '';
+                let botIdFromEvent = null;
                 try {
                     const parsed = JSON.parse(raw);
                     summaryText = parsed.summary || '';
+                    botIdFromEvent = parsed.bot_id || null;
                 } catch (e) {
                     console.warn('Non-JSON SSE payload for summary_stream', e);
                     summaryText = raw;
+                }
+
+                // If backend reports no active bot for this stream, clear all
+                // local UI/cache and stop rendering any previous summary.
+                if (!botIdFromEvent) {
+                    resetDashboardFromInactive();
+                    return;
                 }
 
                 if (!summaryText.trim()) {
@@ -146,6 +155,9 @@
             eventSource.onerror = function (err) {
                 console.error('Summary SSE error', err);
                 setSummaryStatus('Disconnected from summary stream');
+                // When SSE disconnects, re-check backend bot status so
+                // webhook-driven bot removals are reflected in the UI.
+                syncWithBackendBotStatus();
             };
         } catch (e) {
             console.error('Failed to start summary EventSource', e);
@@ -325,5 +337,7 @@
         });
     }
 
+    // Initial sync on page load so we can restore state immediately if there
+    // is an active bot; ongoing lifecycle changes are driven by SSE events.
     syncWithBackendBotStatus();
 })();

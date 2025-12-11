@@ -68,7 +68,7 @@ class RecallBot():
                 "camera": { 
                     "kind": "webpage",
                     "config": {
-                        "url": f"{public_base_url}/"
+                        "url": f"{public_base_url}/scooby"
                     }
                 }
             },

@@ -38,11 +38,11 @@ class RemoveBotRequest(BaseModel):
 class SlackChannelRequest(BaseModel):
     channel_id: str
 
-@router.get("/")
+@router.get("/scooby")
 async def bot_html(request: Request):
     return templates.TemplateResponse("bot.html", {"request": request})
 
-@router.get("/dashboard")
+@router.get("/")
 async def dashboard_html(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
