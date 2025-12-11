@@ -71,6 +71,10 @@ class SummarizationConfig(BaseModel):
     transcript_file_suffix: str = "_transcript.txt"
     events_file_suffix: str = "_events.txt"
 
+    # Slack settings
+    slack_api_key: str = os.getenv("SLACK_API_KEY", "")
+    slack_default_channel: str = os.getenv("SLACK_DEFAULT_CHANNEL", "C0A1N77BECU")
+
 
 def get_config() -> SummarizationConfig:
     """Get summarization configuration singleton"""

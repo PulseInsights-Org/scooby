@@ -4,6 +4,7 @@ from typing import Optional, List, Dict, Any
 import logging
 import aiofiles
 from app.core.config import get_config
+from app.service.slack_notifier import slack_notifier
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ class SummaryStorage:
             logger.exception(f"Error replacing summary: {e}")
 
     async def append_suggestion(self, suggestion: str) -> None:
-        """Append a suggestion block to the suggestions file in summaries dir."""
+        """Append a suggestion block to the suggestions file and notify Slack."""
         try:
             if not suggestion:
                 return
@@ -161,6 +162,17 @@ class SummaryStorage:
                 await f.write(content)
 
             logger.info(f"Appended suggestion to {self.suggestions_path} ({len(suggestion)} chars)")
+            
+            # Send notification to Slack
+            try:
+                message = f"*New Suggestion Generated*\n```{suggestion}```"
+                success = await slack_notifier.send_message(message)
+                if success:
+                    logger.info("Successfully sent Slack notification")
+                else:
+                    logger.warning("Failed to send Slack notification")
+            except Exception as e:
+                logger.error(f"Error sending to Slack: {str(e)}")
 
         except Exception as e:
             logger.exception(f"Error appending suggestion: {e}")
