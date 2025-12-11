@@ -127,21 +127,12 @@
                 }
 
                 let summaryText = '';
-                let botIdFromEvent = null;
                 try {
                     const parsed = JSON.parse(raw);
                     summaryText = parsed.summary || '';
-                    botIdFromEvent = parsed.bot_id || null;
                 } catch (e) {
                     console.warn('Non-JSON SSE payload for summary_stream', e);
                     summaryText = raw;
-                }
-
-                // If backend reports no active bot for this stream, clear all
-                // local UI/cache and stop rendering any previous summary.
-                if (!botIdFromEvent) {
-                    resetDashboardFromInactive();
-                    return;
                 }
 
                 if (!summaryText.trim()) {
@@ -337,7 +328,15 @@
         });
     }
 
-    // Initial sync on page load so we can restore state immediately if there
-    // is an active bot; ongoing lifecycle changes are driven by SSE events.
+    // Initial sync on page load
     syncWithBackendBotStatus();
+
+    // Periodically poll backend for bot status so UI reacts to webhook-driven
+    // status changes (e.g., bot kicked or meeting ended) without manual refresh.
+    try {
+        const POLL_MS = 10000; // 10 seconds
+        setInterval(syncWithBackendBotStatus, POLL_MS);
+    } catch (e) {
+        console.warn('Failed to start periodic bot_status polling', e);
+    }
 })();
