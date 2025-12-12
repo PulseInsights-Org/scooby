@@ -159,6 +159,16 @@ async def summary_stream():
     """
 
     async def event_generator():
+        """Yield SSE events whenever summary text or bot status changes.
+
+        The payload is a JSON object of the form:
+            {
+                "bot_id": <str | null>,
+                "bot_active": <bool>,
+                "summary": <str>
+            }
+        """
+
         last_payload: Optional[str] = None
         while True:
             try:
@@ -174,10 +184,12 @@ async def summary_stream():
 
                 payload_dict = {
                     "bot_id": current_bot_id,
+                    "bot_active": bool(current_bot_id),
                     "summary": summary,
                 }
                 payload = json.dumps(payload_dict)
 
+                # Emit only on change of summary text or bot status
                 if payload != last_payload:
                     last_payload = payload
                     yield f"data: {payload}\n\n"
