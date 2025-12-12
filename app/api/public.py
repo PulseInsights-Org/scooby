@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import logging
 import os
@@ -96,7 +97,12 @@ slack_client = CobaltSlackClient()
 
 @router.post("/summary")
 async def send_summary_to_slack(request: Request):
-    """Send the latest meeting summary to a Slack channel."""
+    """Send the latest meeting summary to a Slack channel.
+
+    For successful calls, we post the summary into the channel via the Slack client
+    and return an *empty* response body so that the slash command does not show
+    extra JSON/status noise in Slack.
+    """
 
     logger.info("[SUMMARY] Incoming request: query_params=%s", dict(request.query_params))
 
@@ -117,21 +123,23 @@ async def send_summary_to_slack(request: Request):
 
     if not channel_id:
         logger.error("[SUMMARY] Missing channel_id in request. query_params=%s", dict(request.query_params))
-        return {"status": "error", "error": "missing_channel_id"}
+        return PlainTextResponse("missing channel_id", status_code=400)
 
     summary = await get_current_summary_text()
     if not summary:
         logger.warning("[SUMMARY] No summary available for channel_id=%s", channel_id)
-        return {"status": "no_summary_available"}
+        # Minimal, human-readable message for the user when no summary exists
+        return PlainTextResponse("No summary available yet.", status_code=200)
 
     try:
         await slack_client.send_message(channel_id, summary)
         logger.info("[SUMMARY] Sent summary to channel_id=%s", channel_id)
     except Exception:
         logger.exception("[SUMMARY] Failed to send summary to Slack for channel_id=%s", channel_id)
-        return {"status": "error", "error": "slack_send_failed"}
+        return PlainTextResponse("Failed to send summary to Slack.", status_code=500)
 
-    return {"status": "sent", "type": "summary"}
+    # Success: empty body so the only visible text is the actual summary message
+    return PlainTextResponse("", status_code=200)
 
 @router.post("/suggest")
 async def send_suggestion_to_slack(request: Request):
@@ -156,7 +164,7 @@ async def send_suggestion_to_slack(request: Request):
 
     if not channel_id:
         logger.error("[SUGGEST] Missing channel_id in request. query_params=%s", dict(request.query_params))
-        return {"status": "error", "error": "missing_channel_id"}
+        return PlainTextResponse("missing channel_id", status_code=400)
 
     bot_id = get_active_bot_id()
     if not bot_id:
@@ -165,7 +173,7 @@ async def send_suggestion_to_slack(request: Request):
             dict(form),
             dict(request.query_params),
         )
-        return {"status": "error", "error": "no_active_bot"}
+        return PlainTextResponse("No active Scooby bot. Start a meeting first.", status_code=200)
 
     import asyncio
 
@@ -176,15 +184,6 @@ async def send_suggestion_to_slack(request: Request):
         """Background task to generate a RAG-backed suggestion and send it to Slack."""
         try:
             logger.info("[SUGGEST] Starting background suggestion generation for bot_id=%s", bot_id)
-
-            # Send initial "processing" message
-            try:
-                await slack_client.send_message(
-                    channel_id,
-                    "processing recent discussion to generate a suggestion...",
-                )
-            except Exception as e:
-                logger.warning("[SUGGEST] Failed to send processing message: %s", e)
 
             if reference_timestamp is None:
                 suggestion_text = (
@@ -210,7 +209,7 @@ async def send_suggestion_to_slack(request: Request):
             try:
                 await slack_client.send_message(
                     channel_id,
-                    "❌ Failed to generate a suggestion. Please try again or check logs for details.",
+                    "Failed to generate a suggestion. Please try again or check server logs.",
                 )
             except Exception:
                 logger.exception("[SUGGEST] Failed to send error message to Slack")
@@ -218,7 +217,8 @@ async def send_suggestion_to_slack(request: Request):
     asyncio.create_task(process_and_send_suggestion())
 
     logger.info("[SUGGEST] Acknowledged request, suggestion generation in background")
-    return {"status": "processing", "message": "Suggestion generation started in background"}
+    # For slash command: just show a simple text like "processing..." and nothing else
+    return PlainTextResponse("processing...", status_code=200)
 
 
 @router.post("/analyze-screen")
@@ -256,7 +256,7 @@ async def analyze_screen_from_slack(request: Request):
 
     if not channel_id:
         logger.error("[ANALYZE_SCREEN] Missing channel_id in request. query_params=%s", dict(request.query_params))
-        return {"status": "error", "error": "missing_channel_id"}
+        return PlainTextResponse("missing channel_id", status_code=400)
 
     if not bot_id:
         logger.error(
@@ -264,7 +264,7 @@ async def analyze_screen_from_slack(request: Request):
             dict(form),
             dict(request.query_params),
         )
-        return {"status": "error", "error": "no_active_bot"}
+        return PlainTextResponse("No active Scooby bot. Start a meeting first.", status_code=200)
 
     # Import asyncio for background task
     import asyncio
@@ -286,15 +286,6 @@ async def analyze_screen_from_slack(request: Request):
                 request_received_at.isoformat(),
                 reference_timestamp,
             )
-
-            # Send initial "processing" message
-            try:
-                await slack_client.send_message(
-                    channel_id,
-                    "processing recent screenshare frames...",
-                )
-            except Exception as e:
-                logger.warning("[ANALYZE_SCREEN] Failed to send processing message: %s", e)
 
             if reference_timestamp is None:
                 analysis_text = (
@@ -321,7 +312,7 @@ async def analyze_screen_from_slack(request: Request):
             try:
                 await slack_client.send_message(
                     channel_id,
-                    "❌ Failed to analyze screenshare frames. Please try again or check logs for details."
+                    "Failed to analyze screenshare frames. Please try again or check server logs."
                 )
             except Exception:
                 logger.exception("[ANALYZE_SCREEN] Failed to send error message to Slack")
@@ -329,9 +320,9 @@ async def analyze_screen_from_slack(request: Request):
     # Start background task
     asyncio.create_task(process_and_send_analysis())
     
-    # Return immediately to avoid Slack timeout
+    # Return immediately to avoid Slack timeout; Slack should only see a simple text
     logger.info("[ANALYZE_SCREEN] Acknowledged request, processing in background")
-    return {"status": "processing", "message": "Analysis started in background"}
+    return PlainTextResponse("processing...", status_code=200)
 
 
 
