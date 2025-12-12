@@ -19,6 +19,7 @@ from app.service.transcript_ingestion import TranscriptIngestion
 from app.service.transcript_buffer import TranscriptBuffer
 from app.service.summarization_service import SummarizationService
 from app.service.summary_storage import SummaryStorage
+from app.service.suggestion_service import SuggestionService
 from app.core.config import get_config
 from app.service.screenshare_buffer import ScreenshareRedisBuffer
 from app.service.screenshare_s3 import ScreenshareS3
@@ -39,6 +40,7 @@ screenshare_buffer = ScreenshareRedisBuffer()
 screenshare_s3 = ScreenshareS3()
 screenshare_storage = ScreenshareStorage()
 screen_analysis_service = ScreenAnalysisService()
+suggestion_service = SuggestionService()
 
 current_bot_id = None
 current_meeting_url = None
@@ -46,6 +48,8 @@ transcripts_enabled = False
 current_x_org_name = None
 processed_audio_segments = set()
 active_screensharers: Set[str] = set()
+current_meeting_relative_time: float | None = None
+current_transcript_relative_time: float | None = None
 
 # Per participant state for video frame handling (for FPS/downsampling + dedupe)
 participant_frame_hashes: Dict[str, Set[str]] = {}
@@ -68,6 +72,16 @@ ti = TranscriptIngestion(org_name="")
 def get_active_bot_id() -> Optional[str]:
     """Return the currently active Recall bot id, if any."""
     return current_bot_id
+
+
+def get_current_meeting_relative_time() -> Optional[float]:
+    """Return the latest known meeting-relative timestamp (in seconds), if any."""
+    return current_meeting_relative_time
+
+
+def get_current_transcript_relative_time() -> Optional[float]:
+    """Return the latest known transcript-relative timestamp (in seconds), if any."""
+    return current_transcript_relative_time
 
 async def get_current_summary_text() -> Optional[str]:
     """Return the current global summary for the active meeting, if any."""
@@ -93,19 +107,44 @@ async def get_latest_screen_analysis_text() -> Optional[str]:
     return await summary_storage.get_latest_screen_analysis()
 
 
-async def run_vision_screen_analysis_for_active_meeting() -> Optional[str]:
-    """Run vision-based screen analysis for the currently active meeting, if any.
+async def run_vision_screen_analysis_for_active_meeting(
+    reference_timestamp: float,
+) -> Optional[str]:
+    """Run vision-based screen analysis for the currently active meeting.
 
-    This uses ScreenAnalysisService to inspect the latest screenshare-related
-    event and associated frames in Redis for the active bot.
+    Uses a time-windowed approach around the provided meeting-relative
+    timestamp (T-5s to T).
     """
     global summary_storage
     if not current_bot_id or not summary_storage:
         return None
 
-    return await screen_analysis_service.analyze_latest_screenshare(
+    return await screen_analysis_service.analyze_around_time(
         bot_id=current_bot_id,
         storage=summary_storage,
+        reference_timestamp=reference_timestamp,
+    )
+
+
+async def run_issue_suggestion_for_active_meeting(
+    reference_timestamp: float,
+    window_seconds: float = 15.0,
+) -> Optional[str]:
+    """Generate a short, actionable suggestion around a given meeting time.
+      - Reads events and transcripts from SummaryStorage.
+      - Extracts context from [T - window_seconds, T].
+      - Optionally queries the issues Pinecone index for similar issues.
+      - Calls a Gemini text model to produce a crisp suggestion.
+    """
+
+    global summary_storage
+    if not current_bot_id or not summary_storage:
+        return None
+
+    return await suggestion_service.generate_suggestion_around_time(
+        storage=summary_storage,
+        reference_timestamp=reference_timestamp,
+        window_seconds=window_seconds,
     )
 
 
@@ -161,13 +200,15 @@ def _is_duplicate_audio_segment(start_time: float, end_time: float, speaker: str
 
 def _set_inactive():
     global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name
-    global transcript_buffer, summary_storage
+    global transcript_buffer, summary_storage, current_meeting_relative_time, current_transcript_relative_time
     current_bot_id = None
     current_meeting_url = None
     transcripts_enabled = False
     current_x_org_name = None
     transcript_buffer = None
     summary_storage = None
+    current_meeting_relative_time = None
+    current_transcript_relative_time = None
     try:
         bot_context.clear()
     except Exception:
@@ -381,6 +422,13 @@ async def recall_realtime_websocket(websocket: WebSocket):
                     hashes.add(img_hash)
                     if ts_relative is not None:
                         participant_last_ts[key] = ts_relative
+                        # Track latest known meeting-relative time from screenshare frames
+                        global current_meeting_relative_time
+                        try:
+                            if current_meeting_relative_time is None or ts_relative > current_meeting_relative_time:
+                                current_meeting_relative_time = ts_relative
+                        except Exception:
+                            pass
                     # Uncomment this after testing 
                     await screenshare_buffer.push_frame(
                         org_name=current_x_org_name,
@@ -627,6 +675,20 @@ async def recall_webhook(request: Request):
             end_time = words[-1]["end_timestamp"]["relative"]
 
             print(f"Processing audio segment: {start_time}s to {end_time}s from {speaker}")
+
+            # Track latest known meeting-relative time from transcript
+            global current_meeting_relative_time, current_transcript_relative_time
+            try:
+                if current_meeting_relative_time is None or end_time > current_meeting_relative_time:
+                    current_meeting_relative_time = end_time
+            except Exception:
+                pass
+
+            try:
+                if current_transcript_relative_time is None or end_time > current_transcript_relative_time:
+                    current_transcript_relative_time = end_time
+            except Exception:
+                pass
 
             if _is_duplicate_audio_segment(start_time, end_time, speaker):
                 print(f"Skipping duplicate audio segment from {speaker}")

@@ -4,175 +4,85 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Scooby Dashboard</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='css/bot.css') }}">
-    <style>
-        .dashboard-container {
-            max-width: 1200px;
-            margin: 32px auto;
-            padding: 0 16px;
-            display: flex;
-            gap: 24px;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            box-sizing: border-box;
-        }
-        .dashboard-card {
-            background: #ffffff;
-            border-radius: 16px;
-            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-            padding: 24px;
-            flex: 1 1 0;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            box-sizing: border-box;
-        }
-        /* Left card a bit narrower on wide screens */
-        .dashboard-card:first-child {
-            flex: 0.85;
-            max-width: 320px;
-        }
-        .dashboard-card:last-child {
-            flex: 2;
-        }
-        .dashboard-title {
-            font-size: 20px;
-            font-weight: 600;
-            color: #0f172a;
-            margin-bottom: 16px;
-        }
-        .field-label {
-            font-size: 13px;
-            font-weight: 500;
-            color: #64748b;
-            margin-bottom: 6px;
-        }
-        .text-input, .select-input {
-            width: 100%;
-            padding: 10px 12px;
-            border-radius: 10px;
-            border: 1px solid #e2e8f0;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.15s ease, box-shadow 0.15s ease;
-        }
-        .text-input:focus, .select-input:focus {
-            border-color: #6366f1;
-            box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15);
-        }
-        .primary-btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 10px 16px;
-            border-radius: 999px;
-            border: none;
-            background: linear-gradient(135deg, #4f46e5, #6366f1);
-            color: #ffffff;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            margin-top: 16px;
-            gap: 6px;
-        }
-        .primary-btn:disabled {
-            opacity: 0.7;
-            cursor: default;
-        }
-        .status-text {
-            font-size: 13px;
-            margin-top: 10px;
-            color: #64748b;
-        }
-        .status-text.ok {
-            color: #16a34a;
-        }
-        .status-text.error {
-            color: #dc2626;
-        }
-        .summary-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 8px;
-        }
-        .summary-status-pill {
-            font-size: 11px;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: #eff6ff;
-            color: #1d4ed8;
-        }
-        .summary-content {
-            flex: 1;
-            border-radius: 12px;
-            border: 1px solid #e5e7eb;
-            background: #f9fafb;
-            padding: 12px 14px;
-            font-size: 13px;
-            color: #111827;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            max-height: 420px;
-            box-sizing: border-box;
-        }
-        .summary-placeholder {
-            color: #9ca3af;
-            font-style: italic;
-        }
-        @media (max-width: 960px) {
-            .dashboard-container {
-                flex-direction: column;
-                max-width: 100%;
-            }
-            .dashboard-card {
-                max-width: 100%;
-            }
-            .dashboard-card:first-child,
-            .dashboard-card:last-child {
-                flex: 1 1 auto;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/dashboard.css') }}">
 </head>
 <body>
-<div class="dashboard-container">
-    <div class="dashboard-card">
-        <div class="dashboard-title">Add Scooby to Meeting</div>
-        <div>
-            <label class="field-label" for="orgName">Organization Name</label>
-            <input id="orgName" class="text-input" type="text" placeholder="e.g. pulse_dev" />
-        </div>
-        <div style="margin-top: 12px;">
-            <label class="field-label" for="meetingUrl">Meeting Link</label>
-            <input id="meetingUrl" class="text-input" type="url" placeholder="Paste your meeting URL" />
-        </div>
-        <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
-            <input id="saveTranscript" type="checkbox" checked />
-            <label for="saveTranscript" style="font-size: 13px; color: #4b5563;">Enable transcript & summary generation</label>
-        </div>
-        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
-            <button id="addScoobyBtn" class="primary-btn">
-                <span>+ Add Scooby to Meeting</span>
-            </button>
-            <button id="removeScoobyBtn" class="primary-btn" style="background: linear-gradient(135deg, #dc2626, #f97316);">
-                <span>Remove Scooby from Meeting</span>
-            </button>
-        </div>
-        <div id="addScoobyStatus" class="status-text"></div>
+    <div class="dashboard-wrapper">
+        <header class="dashboard-header">
+            <h1 class="logo">Scooby</h1>
+            <p class="tagline">Meeting Intelligence Platform</p>
+        </header>
+
+        <main class="dashboard-container">
+            <aside class="control-panel">
+                <div class="panel-header">
+                    <h2>Meeting Setup</h2>
+                </div>
+
+                <form class="control-form">
+                    <div class="form-group">
+                        <label for="orgName" class="form-label">Organization Name</label>
+                        <input 
+                            id="orgName" 
+                            class="form-input" 
+                            type="text" 
+                            placeholder="Enter organization name"
+                            autocomplete="organization"
+                        />
+                    </div>
+
+                    <div class="form-group">
+                        <label for="meetingUrl" class="form-label">Meeting Link</label>
+                        <input 
+                            id="meetingUrl" 
+                            class="form-input" 
+                            type="url" 
+                            placeholder="https://meet.google.com/..."
+                            autocomplete="url"
+                        />
+                    </div>
+
+                    <div class="form-group checkbox-group">
+                        <label class="checkbox-label">
+                            <input id="saveTranscript" type="checkbox" checked />
+                            <span class="checkbox-text">Enable transcript & summary generation</span>
+                        </label>
+                    </div>
+
+                    <div class="button-group">
+                        <button id="addScoobyBtn" class="btn btn-primary" type="button">
+                            <span class="btn-icon">+</span>
+                            <span>Add Scooby</span>
+                        </button>
+                        <button id="removeScoobyBtn" class="btn btn-danger" type="button">
+                            <span class="btn-icon">×</span>
+                            <span>Remove Scooby</span>
+                        </button>
+                    </div>
+
+                    <div id="addScoobyStatus" class="status-message"></div>
+                </form>
+            </aside>
+
+            <section class="summary-panel">
+                <div class="panel-header">
+                    <h2>Live Meeting Summary</h2>
+                    <span id="summaryStatus" class="status-badge">Waiting for summary...</span>
+                </div>
+
+                <div id="summaryContent" class="summary-content">
+                    <div class="summary-placeholder">
+                        <svg class="placeholder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p>No summary yet</p>
+                        <p class="placeholder-subtext">Once Scooby joins the meeting, summaries will appear here automatically</p>
+                    </div>
+                </div>
+            </section>
+        </main>
     </div>
 
-    <div class="dashboard-card">
-        <div class="summary-header">
-            <div class="dashboard-title" style="margin-bottom: 0;">Live Meeting Summary</div>
-            <div id="summaryStatus" class="summary-status-pill">Waiting for summary...</div>
-        </div>
-        <div id="summaryContent" class="summary-content">
-            <div class="summary-placeholder">No summary yet. Once Scooby starts receiving audio and generating summaries, the latest Minutes of Meeting will appear here automatically.</div>
-        </div>
-    </div>
-</div>
-
-<script src="{{ url_for('static', path='js/dashboard.js') }}"></script>
+    <script src="{{ url_for('static', path='js/dashboard.js') }}"></script>
 </body>
 </html>

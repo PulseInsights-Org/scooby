@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import logging
 import os
 import json
+from datetime import datetime, timezone
 from app.api.recall import (
     add_bot,
     get_current_summary_text,
@@ -11,6 +12,9 @@ from app.api.recall import (
     get_latest_screen_analysis_text,
     get_active_bot_id,
     run_vision_screen_analysis_for_active_meeting,
+    get_current_meeting_relative_time,
+    run_issue_suggestion_for_active_meeting,
+    get_current_transcript_relative_time,
 )
 from app.core.config import get_config
 from app.service.cobalt_slack_client import CobaltSlackClient
@@ -131,7 +135,7 @@ async def send_summary_to_slack(request: Request):
 
 @router.post("/suggest")
 async def send_suggestion_to_slack(request: Request):
-    """Send the latest suggestion to a Slack channel."""
+    """Generate a fresh, time-windowed suggestion and send it to a Slack channel."""
 
     logger.info("[SUGGEST] Incoming request: query_params=%s", dict(request.query_params))
 
@@ -154,19 +158,67 @@ async def send_suggestion_to_slack(request: Request):
         logger.error("[SUGGEST] Missing channel_id in request. query_params=%s", dict(request.query_params))
         return {"status": "error", "error": "missing_channel_id"}
 
-    suggestion = await get_latest_suggestion_text()
-    if not suggestion:
-        logger.warning("[SUGGEST] No suggestion available for channel_id=%s", channel_id)
-        return {"status": "no_suggestion_available"}
+    bot_id = get_active_bot_id()
+    if not bot_id:
+        logger.error(
+            "[SUGGEST] No active bot_id available for suggestion. form=%s, query_params=%s",
+            dict(form),
+            dict(request.query_params),
+        )
+        return {"status": "error", "error": "no_active_bot"}
 
-    try:
-        await slack_client.send_message(channel_id, suggestion)
-        logger.info("[SUGGEST] Sent suggestion to channel_id=%s", channel_id)
-    except Exception:
-        logger.exception("[SUGGEST] Failed to send suggestion to Slack for channel_id=%s", channel_id)
-        return {"status": "error", "error": "slack_send_failed"}
+    import asyncio
 
-    return {"status": "sent", "type": "suggestion"}
+    # Snapshot reference time at request moment to avoid window drift
+    T_request = get_current_transcript_relative_time() or get_current_meeting_relative_time()
+
+    async def process_and_send_suggestion(reference_timestamp: float | None = T_request):
+        """Background task to generate a RAG-backed suggestion and send it to Slack."""
+        try:
+            logger.info("[SUGGEST] Starting background suggestion generation for bot_id=%s", bot_id)
+
+            # Send initial "processing" message
+            try:
+                await slack_client.send_message(
+                    channel_id,
+                    "processing recent discussion to generate a suggestion...",
+                )
+            except Exception as e:
+                logger.warning("[SUGGEST] Failed to send processing message: %s", e)
+
+            if reference_timestamp is None:
+                suggestion_text = (
+                    "No transcript timeline is available yet. "
+                    "Try discussing the issue for a few seconds, then run /suggest again."
+                )
+            else:
+                suggestion_text = await run_issue_suggestion_for_active_meeting(
+                    reference_timestamp=reference_timestamp,
+                )
+
+            if not suggestion_text:
+                suggestion_text = (
+                    "No suggestion could be generated yet. "
+                    "Please make sure there is recent discussion about a concrete issue."
+                )
+
+            await slack_client.send_message(channel_id, suggestion_text)
+            logger.info("[SUGGEST] Successfully sent suggestion to channel_id=%s", channel_id)
+
+        except Exception:
+            logger.exception("[SUGGEST] Error in background suggestion task for bot_id=%s", bot_id)
+            try:
+                await slack_client.send_message(
+                    channel_id,
+                    "❌ Failed to generate a suggestion. Please try again or check logs for details.",
+                )
+            except Exception:
+                logger.exception("[SUGGEST] Failed to send error message to Slack")
+
+    asyncio.create_task(process_and_send_suggestion())
+
+    logger.info("[SUGGEST] Acknowledged request, suggestion generation in background")
+    return {"status": "processing", "message": "Suggestion generation started in background"}
 
 
 @router.post("/analyze-screen")
@@ -177,7 +229,12 @@ async def analyze_screen_from_slack(request: Request):
     then processes the analysis in the background.
     """
 
-    logger.info("[ANALYZE_SCREEN] Incoming request: query_params=%s", dict(request.query_params))
+    request_received_at = datetime.now(timezone.utc)
+    logger.info(
+        "[ANALYZE_SCREEN] Incoming request at %s (UTC): query_params=%s",
+        request_received_at.isoformat(),
+        dict(request.query_params),
+    )
 
     form = await request.form()
 
@@ -212,14 +269,23 @@ async def analyze_screen_from_slack(request: Request):
     # Import asyncio for background task
     import asyncio
 
-    async def process_and_send_analysis():
+    # Snapshot reference time at request moment to avoid window drift
+    T_request = get_current_transcript_relative_time() or get_current_meeting_relative_time()
+
+    async def process_and_send_analysis(reference_timestamp: float | None = T_request):
         """Background task to run vision-based screen analysis and send it to Slack.
 
         Heavy lifting (event selection, Redis frame fetch, Gemini call) is
         delegated to ScreenAnalysisService via recall.run_vision_screen_analysis_for_active_meeting.
         """
         try:
-            logger.info("[ANALYZE_SCREEN] Starting background analysis for bot_id=%s", bot_id)
+            logger.info(
+                "[ANALYZE_SCREEN] Starting background analysis for bot_id=%s, channel_id=%s, request_received_at=%s (UTC), reference_timestamp=%s",
+                bot_id,
+                channel_id,
+                request_received_at.isoformat(),
+                reference_timestamp,
+            )
 
             # Send initial "processing" message
             try:
@@ -230,8 +296,15 @@ async def analyze_screen_from_slack(request: Request):
             except Exception as e:
                 logger.warning("[ANALYZE_SCREEN] Failed to send processing message: %s", e)
 
-            # Delegate heavy work to ScreenAnalysisService via recall module
-            analysis_text = await run_vision_screen_analysis_for_active_meeting()
+            if reference_timestamp is None:
+                analysis_text = (
+                    "No transcript or screenshare timeline is available yet. "
+                    "Try speaking about the issue and sharing your screen, then run /capture again."
+                )
+            else:
+                analysis_text = await run_vision_screen_analysis_for_active_meeting(
+                    reference_timestamp=reference_timestamp,
+                )
 
             if not analysis_text:
                 analysis_text = (

@@ -69,112 +69,215 @@ class ScreenAnalysisService:
         except Exception:
             return None
 
-    def _find_latest_screenshare_event(
-        self,
-        events_path: str,
-    ) -> Optional[Tuple[str, str]]:
-        """Return (event_text, participant_name) for the latest screenshare event.
+    # Legacy latest-screenshare helpers removed in favor of timestamp-based analysis
 
-        Heuristic: last event whose description clearly suggests screen sharing
-        or presenting, using a broader set of phrases such as:
-          - "screen share", "screenshare", "screen-sharing"
-          - "share screen", "sharing my screen", "sharing the screen"
-          - "presenting", "present my screen", "presenting my screen"
-          - "present screen", "present the screen"
-        """
+    def _timestamp_to_seconds(self, ts: str) -> Optional[float]:
+        """Convert a timestamp string like 'MM:SS' or 'H:MM:SS' to seconds."""
         try:
-            latest_event: Optional[Tuple[str, str]] = None
-            keywords = [
-                "screen share",
-                "screenshare",
-                "screen-sharing",
-                "share screen",
-                "sharing my screen",
-                "sharing the screen",
-                "sharing your screen",
-                "sharing their screen",
-                "presenting my screen",
-                "presenting your screen",
-                "presenting the screen",
-                "present my screen",
-                "present your screen",
-                "present screen",
-                "present the screen",
-                "presenting",
-            ]
+            parts = ts.split(":")
+            parts = [int(p) for p in parts]
+            if len(parts) == 2:
+                m, s = parts
+                return m * 60 + s
+            if len(parts) == 3:
+                h, m, s = parts
+                return h * 3600 + m * 60 + s
+        except Exception:
+            return None
+        return None
 
+    def _range_to_seconds(self, range_str: str) -> Optional[Tuple[float, float]]:
+        """Convert a 'start-end' timestamp range (e.g. '07:41-07:59') to (start, end) seconds."""
+        try:
+            start_str, end_str = range_str.split("-", 1)
+            start = self._timestamp_to_seconds(start_str.strip())
+            end = self._timestamp_to_seconds(end_str.strip())
+            if start is None or end is None:
+                return None
+            return start, end
+        except Exception:
+            return None
+
+    async def analyze_around_time(
+        self,
+        *,
+        bot_id: str,
+        storage: SummaryStorage,
+        reference_timestamp: float,
+        window_seconds: float = 5.0,
+    ) -> Optional[str]:
+        """Run vision-based analysis for events/transcripts around a given time.
+
+        Uses a [T - window_seconds, T] window in meeting-relative seconds. First
+        tries to use events in that window; if none are found, falls back to
+        transcript lines. Then selects recent frames for the same participant
+        near that time and calls the vision model.
+        """
+
+        if not bot_id or not storage or reference_timestamp is None:
+            return None
+
+        events_path = storage.get_events_path()
+        transcript_path = storage.get_transcript_path()
+
+        window_start = max(0.0, reference_timestamp - window_seconds)
+        window_end = reference_timestamp
+
+        logger.info(
+            "[ScreenAnalysisService] Time-windowed analysis window: %.2fs to %.2fs (ref=%.2fs, window=%.2fs)",
+            window_start,
+            window_end,
+            reference_timestamp,
+            window_seconds,
+        )
+
+        context_lines: List[str] = []
+        participant_name: Optional[str] = None
+
+        # 1) Try events in the window
+        try:
             with open(events_path, "r", encoding="utf-8") as f:
                 for line in f:
                     parsed = self._parse_event_line(line)
                     if not parsed:
                         continue
-                    _ts, event_desc, person = parsed
-                    text_lower = event_desc.lower()
-                    if any(kw in text_lower for kw in keywords):
-                        latest_event = (event_desc, person)
-
-            return latest_event
+                    ts_raw, event_desc, person = parsed
+                    rng = self._range_to_seconds(ts_raw)
+                    if not rng:
+                        continue
+                    start_sec, end_sec = rng
+                    if end_sec >= window_start and start_sec <= window_end:
+                        logger.info(
+                            "[ScreenAnalysisService] Selected EVENT [%s] (%.2f-%.2f)s for window [%.2f-%.2f]s (person=%s)",
+                            ts_raw,
+                            start_sec,
+                            end_sec,
+                            window_start,
+                            window_end,
+                            person,
+                        )
+                        context_lines.append(f"- {event_desc}")
+                        participant_name = person  # last matching person wins
         except FileNotFoundError:
-            logger.debug("[ScreenAnalysisService] Events file not found: %s", events_path)
-            return None
+            logger.debug("[ScreenAnalysisService] Events file not found for time-windowed analysis: %s", events_path)
         except Exception:
             logger.exception(
-                "[ScreenAnalysisService] Error while scanning events file for screenshare events: %s",
+                "[ScreenAnalysisService] Error while scanning events file for time-windowed analysis: %s",
                 events_path,
             )
-            return None
 
-    async def analyze_latest_screenshare(
-        self,
-        *,
-        bot_id: str,
-        storage: SummaryStorage,
-    ) -> Optional[str]:
-        """Run vision-based analysis for the latest screenshare event.
+        # 2) If no events, fallback to transcript lines in the window
+        if not context_lines:
+            try:
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        text = line.strip()
+                        if not text or not text.startswith("["):
+                            continue
+                        try:
+                            ts_part, rest = text.split("]", 1)
+                            ts_range = ts_part.lstrip("[").strip()
+                            rng = self._range_to_seconds(ts_range)
+                            if not rng:
+                                continue
+                            start_sec, end_sec = rng
+                            if end_sec >= window_start and start_sec <= window_end:
+                                logger.info(
+                                    "[ScreenAnalysisService] Selected TRANSCRIPT [%s] (%.2f-%.2f)s for window [%.2f-%.2f]s",
+                                    ts_range,
+                                    start_sec,
+                                    end_sec,
+                                    window_start,
+                                    window_end,
+                                )
+                                context_lines.append(rest.strip())
+                                if participant_name is None and ":" in rest:
+                                    speaker, _ = rest.split(":", 1)
+                                    participant_name = speaker.strip()
+                        except Exception:
+                            continue
+            except FileNotFoundError:
+                logger.debug(
+                    "[ScreenAnalysisService] Transcript file not found for time-windowed analysis: %s",
+                    transcript_path,
+                )
+            except Exception:
+                logger.exception(
+                    "[ScreenAnalysisService] Error while scanning transcript file for time-windowed analysis: %s",
+                    transcript_path,
+                )
 
-        Returns a human-readable analysis string, or None/short message if
-        no suitable context/frames are available.
-        """
-        if not bot_id or not storage:
-            return None
-
-        events_path = storage.get_events_path()
-        latest = self._find_latest_screenshare_event(events_path)
-        if not latest:
-            logger.info(
-                "[ScreenAnalysisService] No screenshare-related events found in %s",
-                events_path,
-            )
+        if not context_lines:
             return (
-                "No screenshare-related events have been detected yet in the meeting "
-                "timeline. Try sharing your screen and describing the issue, then run /capture again."
+                "No recent events or transcripts were found in the last few seconds of "
+                "the meeting. Try speaking about the issue and sharing your screen, then "
+                "run /capture again."
             )
 
-        event_text, participant_name = latest
+        if not participant_name:
+            participant_name = "Unknown participant"
+
         logger.info(
-            "[ScreenAnalysisService] Using latest screenshare event by '%s': %s",
+            "[ScreenAnalysisService] Using time-windowed context from %.2fs to %.2fs for participant '%s'",
+            window_start,
+            window_end,
             participant_name,
-            event_text,
         )
 
-        # Fetch frames for this bot + participant
+        # 3) Fetch frames for this bot + participant within the same time window
+        # used for events/transcripts. We pull more than needed from Redis and
+        # then filter down to frames whose timestamp_relative lies inside
+        # [window_start, window_end], sending up to vision_max_images_per_request
+        # frames to the vision model.
+
         max_frames = self.config.vision_max_images_per_request
-        frames: List[Dict[str, Any]] = self.buffer.get_recent_frames_for_bot_and_participant(
+        if max_frames <= 0:
+            max_frames = 5
+
+        recent_frames: List[Dict[str, Any]] = self.buffer.get_recent_frames_for_bot(
             bot_id=bot_id,
-            participant_name=participant_name,
-            max_frames=max_frames,
+            max_frames=max_frames * 5,
         )
+
+        candidate_frames: List[Dict[str, Any]] = []
+        for frame in recent_frames:
+            pn = (frame.get("participant_name") or "").lower()
+            if participant_name.lower() not in pn:
+                continue
+
+            ts_rel = frame.get("timestamp_relative")
+            if ts_rel is None:
+                continue
+
+            if window_start <= ts_rel <= window_end:
+                candidate_frames.append(frame)
+
+        if candidate_frames:
+            ts_vals = [f.get("timestamp_relative") or 0.0 for f in candidate_frames]
+            logger.info(
+                "[ScreenAnalysisService] Frames window for bot_id=%s participant=%s: window=[%.2f-%.2f]s, candidates=%d, ts_min=%.2f, ts_max=%.2f",
+                bot_id,
+                participant_name,
+                window_start,
+                window_end,
+                len(candidate_frames),
+                min(ts_vals),
+                max(ts_vals),
+            )
+
+        candidate_frames.sort(key=lambda f: f.get("timestamp_relative") or 0.0)
+        frames: List[Dict[str, Any]] = candidate_frames[:max_frames]
 
         if not frames:
             logger.info(
-                "[ScreenAnalysisService] No recent frames found in Redis for bot_id=%s, participant=%s",
+                "[ScreenAnalysisService] No recent frames found around %.2fs for bot_id=%s, participant=%s",
+                reference_timestamp,
                 bot_id,
                 participant_name,
             )
             return (
-                "No recent screenshare frames were found for the participant "
-                f"'{participant_name}'. Make sure they are actively sharing their "
-                "screen while describing the issue, then run /capture again."
+                "No recent screenshare frames were found around the time you triggered /capture. "
+                "Make sure you're actively sharing your screen while describing the issue, then try again."
             )
 
         if not self.config.vision_enabled or not self.config.gemini_api_key:
@@ -184,46 +287,45 @@ class ScreenAnalysisService:
                 "the server. Please contact the system administrator."
             )
 
-        # Configure Gemini client
         genai.configure(api_key=self.config.gemini_api_key)
         model = genai.GenerativeModel(self.config.vision_model)
 
         base_prompt = """
-You are an expert technical assistant helping debug issues based on what is shown
-on the user's shared screen. You will be given several PNG frames captured from
-the call, plus a short description of what the participant is saying.
+You are an expert debugging assistant. You are given:
+- A few PNG frames from the user's shared screen, and
+- A short window of spoken context describing the problem.
 
-Your job is to:
-1) Carefully inspect the UI, error messages, and visible configuration.
-2) Infer what the participant is trying to do and why it might be failing.
-3) Provide a concise but practical analysis that would help a teammate debug or
-   guide the user.
+Your job is NOT to describe the screen. Your job is to:
+1) Identify the most likely root cause of the problem.
+2) Propose 2–4 very concrete steps the user should take to fix or debug it.
 
-IMPORTANT CONSTRAINTS:
-- Use the spoken event description as the primary definition of the "problem".
-- ONLY describe and reason about on-screen elements that are clearly related to
-  that problem.
-- If you see windows, tabs, or applications that appear unrelated to the
-  described event/problem, IGNORE them completely and do NOT mention them.
-- If you are unsure whether some on-screen detail is relevant, leave it out.
-
-Be concrete and reference any visible error codes, endpoints, HTTP status
-codes, or obvious misconfigurations on screen that are clearly tied to the
-described event/problem.
+Guidelines:
+- Focus on actionable suggestions (what to change in request body, headers,
+  configuration, timestamp format, etc.), not long prose.
+- Use the on-screen error messages and context to infer what is wrong.
+- If multiple fixes are possible, list them in order of likelihood.
+- Keep the answer short and crisp: no more than a few sentences or bullet
+  points.
+- Do NOT repeat the entire error message; only reference the key parts needed
+  to explain the fix.
 """.strip()
 
+        window_text = "\n".join(context_lines)
         full_prompt = f"""{base_prompt}
 
-Latest screenshare event description (spoken context):
-Speaker: {participant_name}
-Event: {event_text}
+Time window: from {window_start:.1f}s to {window_end:.1f}s (meeting-relative)
 
-Now analyze ONLY the parts of the frames that are clearly connected to this
-event/problem, and summarize the most important insights that would help debug
-or assist the participant.
+Spoken/context in this window:
+Speaker: {participant_name}
+{window_text}
+
+Based ONLY on what is relevant to this window of context and the visible
+on-screen details, write a very short answer that:
+- Names the most likely cause of the problem, and
+- Lists 2–4 specific, practical steps the user should take next to resolve or
+  debug it.
 """.strip()
 
-        # Build image parts for Gemini
         image_parts: List[Dict[str, Any]] = []
         for frame in frames[:max_frames]:
             b64 = frame.get("image_base64")
@@ -240,7 +342,7 @@ or assist the participant.
                 continue
 
         if not image_parts:
-            logger.error("[ScreenAnalysisService] Failed to build image parts from frames")
+            logger.error("[ScreenAnalysisService] Failed to build image parts from frames for time-windowed analysis")
             return (
                 "Screenshare frames were found but could not be decoded for vision "
                 "analysis. Please try again or check server logs for details."
@@ -253,7 +355,7 @@ or assist the participant.
             ])
             analysis_text = (response.text or "").strip()
         except Exception:
-            logger.exception("[ScreenAnalysisService] Error calling Gemini vision model")
+            logger.exception("[ScreenAnalysisService] Error calling Gemini vision model for time-windowed analysis")
             return (
                 "Failed to analyze screenshare frames via the vision model. "
                 "Please try again or check server logs for details."

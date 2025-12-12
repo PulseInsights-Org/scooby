@@ -2,7 +2,11 @@ import os
 import json
 from typing import Any, Dict
 
+import logging
 import redis
+
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenshareRedisBuffer:
@@ -139,3 +143,70 @@ class ScreenshareRedisBuffer:
                     break
 
         return filtered
+
+    def get_frames_for_bot_and_participant_near_time(
+        self,
+        bot_id: str,
+        participant_name: str,
+        center_ts: float,
+        max_frames: int = 5,
+    ) -> list[Dict[str, Any]]:
+        """Return up to max_frames frames near a given time for a participant.
+
+        Uses the stored "timestamp_relative" field to select frames that occurred
+        at or before the given meeting-relative timestamp, ordering by recency.
+        """
+
+        if not bot_id or not participant_name or center_ts is None:
+            return []
+
+        # Fetch more frames than needed and then filter/sort by time.
+        all_frames = self.get_recent_frames_for_bot(bot_id, max_frames=max_frames * 5)
+        name_lower = participant_name.lower()
+        candidates: list[Dict[str, Any]] = []
+
+        for frame in all_frames:
+            pn = (frame.get("participant_name") or "").lower()
+            if name_lower not in pn:
+                continue
+
+            ts_rel = frame.get("timestamp_relative")
+            if ts_rel is None:
+                continue
+
+            if ts_rel <= center_ts:
+                candidates.append(frame)
+
+        if candidates:
+            ts_values = [f.get("timestamp_relative") or 0.0 for f in candidates]
+            logger.info(
+                "[ScreenshareRedisBuffer] Candidate frames for bot_id=%s participant=%s around %.2fs: count=%d, ts_min=%.2f, ts_max=%.2f",
+                bot_id,
+                participant_name,
+                center_ts,
+                len(candidates),
+                min(ts_values),
+                max(ts_values),
+            )
+        else:
+            logger.info(
+                "[ScreenshareRedisBuffer] No candidate frames found for bot_id=%s participant=%s around %.2fs",
+                bot_id,
+                participant_name,
+                center_ts,
+            )
+
+        candidates.sort(key=lambda f: f.get("timestamp_relative") or 0.0, reverse=True)
+
+        selected = candidates[:max_frames]
+        if selected:
+            sel_ts = [f.get("timestamp_relative") or 0.0 for f in selected]
+            logger.info(
+                "[ScreenshareRedisBuffer] Returning %d frames for bot_id=%s participant=%s around %.2fs with timestamps=%s",
+                len(selected),
+                bot_id,
+                participant_name,
+                center_ts,
+                sel_ts,
+            )
+        return selected
