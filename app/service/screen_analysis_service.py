@@ -26,6 +26,84 @@ class ScreenAnalysisService:
     def __init__(self) -> None:
         self.config = get_config()
         self.buffer = ScreenshareRedisBuffer()
+        
+        # Initialize placeholders for new indexes (mocked for now)
+        from app.service.Pinecone_Store import VectoreStore
+        self.company_store = VectoreStore(index_name="company_data")
+        self.product_store = VectoreStore(index_name="products")
+
+    async def _format_customer_summary(self, storage) -> str:
+        """Fetch and format customer summary from cached storage."""
+        if not storage:
+            logger.warning("[ScreenAnalysisService] No storage available for customer summary")
+            return "Customer summary data not available."
+
+        summary_data = await storage.get_analytics_summary()
+        if not summary_data:
+            logger.warning("[ScreenAnalysisService] Customer summary not found in storage")
+            return "Customer summary data not available. Please ensure analytics data was fetched when bot was added."
+
+        # Format the summary data for the prompt
+        try:
+            formatted = []
+            formatted.append(f"**Customer**: {summary_data.get('name', 'Unknown')}")
+            formatted.append(f"**Health Score**: {summary_data.get('health_score', 'N/A')}/100")
+            formatted.append(f"**Sentiment**: {summary_data.get('sentiment', 'N/A').capitalize()}")
+
+            if summary_data.get('customer_intent'):
+                formatted.append(f"\n**Customer Intent**: {summary_data['customer_intent']}")
+
+            if summary_data.get('summary'):
+                formatted.append(f"\n**Summary**: {summary_data['summary']}")
+
+            if summary_data.get('risks'):
+                formatted.append(f"\n**Risks**: {summary_data['risks']}")
+
+            if summary_data.get('opportunities'):
+                formatted.append(f"\n**Opportunities**: {summary_data['opportunities']}")
+
+            if summary_data.get('key_topics'):
+                formatted.append(f"\n**Key Topics**: {summary_data['key_topics']}")
+
+            return "\n".join(formatted)
+
+        except Exception as e:
+            logger.exception(f"[ScreenAnalysisService] Error formatting customer summary: {e}")
+            return "Error formatting customer summary data."
+
+    async def _format_recent_interactions(self, storage) -> str:
+        """Fetch and format recent interactions from cached storage."""
+        if not storage:
+            logger.warning("[ScreenAnalysisService] No storage available for recent interactions")
+            return "Recent interactions data not available."
+
+        interactions_data = await storage.get_analytics_interactions()
+        if not interactions_data:
+            logger.warning("[ScreenAnalysisService] Recent interactions not found in storage")
+            return "Recent interactions data not available. Please ensure analytics data was fetched when bot was added."
+
+        # Format the interactions data for the prompt
+        try:
+            formatted = []
+            total_count = interactions_data.get('total_count', 0)
+            formatted.append(f"**Total Recent Interactions**: {total_count}")
+
+            by_source = interactions_data.get('by_source', {})
+            for source, interactions in by_source.items():
+                if interactions:
+                    formatted.append(f"\n**{source.upper()} ({len(interactions)} interactions)**:")
+                    for interaction in interactions[:5]:  # Show top 5 per source
+                        timestamp = interaction.get('timestamp', 'N/A')
+                        summary = interaction.get('summary', 'No summary')
+                        sentiment = interaction.get('sentiment', 'neutral')
+                        if summary:
+                            formatted.append(f"  - [{timestamp}] {summary} (Sentiment: {sentiment})")
+
+            return "\n".join(formatted) if formatted else "No recent interactions found."
+
+        except Exception as e:
+            logger.exception(f"[ScreenAnalysisService] Error formatting recent interactions: {e}")
+            return "Error formatting recent interactions data."
 
     def _parse_event_line(self, line: str) -> Optional[Tuple[str, str, str]]:
         """Parse a single event line from the events.txt file.
@@ -288,42 +366,97 @@ class ScreenAnalysisService:
             )
 
         genai.configure(api_key=self.config.gemini_api_key)
-        model = genai.GenerativeModel(self.config.vision_model)
+        
+        tools = [
+            {
+                "function_declarations": [
+                    {
+                        "name": "search_knowledge_base",
+                        "description": (
+                            "Search the company or product knowledge base for information. "
+                            "Use 'company_data' for policies, terms, and general company info. "
+                            "Use 'products' for product features, specs, and troubleshooting."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Natural language query to search for.",
+                                },
+                                "index_name": {
+                                    "type": "string",
+                                    "enum": ["company_data", "products"],
+                                    "description": "Which knowledge base to search.",
+                                },
+                                "top_k": {
+                                    "type": "integer",
+                                    "description": "Maximum number of results to retrieve.",
+                                },
+                            },
+                            "required": ["query", "index_name"],
+                        },
+                    }
+                ]
+            }
+        ]
+        
+        model = genai.GenerativeModel(self.config.vision_model, tools=tools)
 
         base_prompt = """
-You are an expert debugging assistant. You are given:
-- A few PNG frames from the user's shared screen, and
-- A short window of spoken context describing the problem.
+You are a sales team helper AI assistant. You are given:
+- A few PNG frames from the customer's shared screen
+- A short window of what happened in the meeting recently (time window text)
+- Customer intent: Global analysis of the customer from onboarding - what they were looking for, are looking for, and might look for
+- Recent interactions: Context from multiple sources (Slack, Gmail, Zendesk, Salesforce, etc.)
 
-Your job is NOT to describe the screen. Your job is to:
-1) Identify the most likely root cause of the problem.
-2) Propose 2–4 very concrete steps the user should take to fix or debug it.
+Your job is to provide strategic sales guidance to help the sales person in this meeting. You should:
 
-Guidelines:
-- Focus on actionable suggestions (what to change in request body, headers,
-  configuration, timestamp format, etc.), not long prose.
-- Use the on-screen error messages and context to infer what is wrong.
-- If multiple fixes are possible, list them in order of likelihood.
-- Keep the answer short and crisp: no more than a few sentences or bullet
-  points.
-- Do NOT repeat the entire error message; only reference the key parts needed
-  to explain the fix.
+1) **Understand the current situation**: Analyze what's happening on screen and in the conversation based on all available context
+2) **Provide actionable guidance**: Tell the sales person how to respond, what to say, or what action to take next
+3) **Use knowledge base strategically**: If the customer has a question or faces an issue, use the knowledge base tool to find accurate answers about products, features, pricing, or policies
+
+Guidelines for your guidance:
+- **Be strategic**: Consider the customer's intent and recent interactions when suggesting what to say
+- **Be helpful**: If the customer is stuck on an issue, help resolve it quickly using the knowledge base, then guide the sales person to pivot back to the sales conversation
+- **Be contextual**: Reference specific details from recent interactions when relevant (e.g., "They mentioned pricing concerns in Slack yesterday - now is a good time to address ROI")
+- **Be concise**: Keep guidance to 2-4 bullet points or a few sentences
+- **Focus on guidance, not description**: Don't just describe what you see - tell the sales person what to DO
+
+Examples of good guidance:
+- "Customer is stuck on login. Use knowledge base to find the solution, help them resolve it, then pivot to discussing the integration features they asked about in their last email."
+- "They're looking at the pricing page. Based on their Salesforce stage (Negotiation) and recent questions about ROI, now is the perfect time to emphasize the enterprise tier value proposition."
+- "Customer intent shows they're evaluating competitors. Highlight our unique differentiation points around [specific feature visible on screen]."
 """.strip()
+
+        # Fetch and format analytics context from storage
+        customer_summary = await self._format_customer_summary(storage)
+        recent_interactions = await self._format_recent_interactions(storage)
 
         window_text = "\n".join(context_lines)
         full_prompt = f"""{base_prompt}
 
 Time window: from {window_start:.1f}s to {window_end:.1f}s (meeting-relative)
 
-Spoken/context in this window:
+CONTEXT:
+1. Customer Summary (Health, Sentiment, Intent, Risks, Opportunities):
+{customer_summary}
+
+2. Recent Interactions (from Slack, Gmail, Zendesk, Salesforce, etc.):
+{recent_interactions}
+
+3. What happened in the meeting recently (Time Window):
 Speaker: {participant_name}
 {window_text}
 
-Based ONLY on what is relevant to this window of context and the visible
-on-screen details, write a very short answer that:
-- Names the most likely cause of the problem, and
-- Lists 2–4 specific, practical steps the user should take next to resolve or
-  debug it.
+You may call the `search_knowledge_base` tool if you need to look up:
+- Company policies, terms, pricing ("company_data")
+- Product features, specs, troubleshooting ("products")
+
+Based on the customer's screen, the meeting context, their health/sentiment/intent, and recent interactions, provide strategic guidance for the sales person on:
+- What to say or do next to move the deal forward
+- How to address what's happening right now based on customer's health score and sentiment
+- How to leverage this moment considering their risks and opportunities
 """.strip()
 
         image_parts: List[Dict[str, Any]] = []
@@ -348,11 +481,76 @@ on-screen details, write a very short answer that:
                 "analysis. Please try again or check server logs for details."
             )
 
+        # Helper to execute the search_knowledge_base tool when invoked by Gemini.
+        async def _handle_tool_call(tool_name: str, args: dict) -> str:
+            if tool_name != "search_knowledge_base":
+                return f"Unknown tool: {tool_name}"
+
+            index_name = args.get("index_name")
+            query = args.get("query")
+            top_k = int(args.get("top_k") or 5)
+
+            if not query:
+                return "Query is required."
+
+            store = None
+            if index_name == "company_data":
+                store = self.company_store
+            elif index_name == "products":
+                store = self.product_store
+            else:
+                return f"Invalid index_name: {index_name}. Must be 'company_data' or 'products'."
+
+            try:
+                # Mocking the actual search call for now
+                return f"[Mock Result from {index_name}] Search for '{query}' returned no results or mocked data."
+            except Exception as e:
+                logger.error(f"[ScreenAnalysisService] Error querying Pinecone index {index_name}: {e}")
+                return f"Error while searching {index_name}: {e}"
+
         try:
             response = await model.generate_content_async([
                 {"text": full_prompt},
                 *image_parts,
             ])
+            
+            # Check for tool calls in the response
+            if hasattr(response, "candidates") and response.candidates:
+                parts = response.candidates[0].content.parts
+                tool_results = []
+                for part in parts:
+                    func_call = getattr(part, "function_call", None)
+                    if not func_call:
+                        continue
+                    tool_name = getattr(func_call, "name", None)
+                    raw_args = getattr(func_call, "args", {}) or {}
+                    
+                    if not isinstance(raw_args, dict):
+                        try:
+                            import json as _json
+                            raw_args = _json.loads(str(raw_args))
+                        except Exception:
+                            raw_args = {}
+                    
+                    tool_output = await _handle_tool_call(tool_name, raw_args)
+                    tool_results.append(
+                        {
+                            "text": f"Tool {tool_name} result:\n{tool_output}",
+                        }
+                    )
+
+                if tool_results:
+                    # Ask the model again with tool outputs and images
+                    response = await model.generate_content_async([
+                        {"text": full_prompt},
+                        # Note: We must re-include images in follow-up turns for Gemini 1.5 usually,
+                        # but typically chat history handles it. Since we are doing single-turn-ish, 
+                        # we append tool results. 
+                        # Ideally we pass history but here we just append text for simplicity as per SuggestionService pattern
+                        *image_parts, 
+                        *tool_results
+                    ])
+
             analysis_text = (response.text or "").strip()
         except Exception:
             logger.exception("[ScreenAnalysisService] Error calling Gemini vision model for time-windowed analysis")

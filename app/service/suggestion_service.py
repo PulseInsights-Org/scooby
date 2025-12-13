@@ -28,6 +28,85 @@ class SuggestionService:
         # Reuse the existing SummarizationService instance for access to the
         # issues Pinecone store, rather than creating a new index client.
         self.summarization_service = SummarizationService()
+        
+        # Initialize placeholders for new indexes (mocked for now)
+        # In a real scenario, these would be separate VectoreStore instances
+        from app.service.Pinecone_Store import VectoreStore
+        self.company_store = VectoreStore(index_name="company_data")
+        self.product_store = VectoreStore(index_name="products")
+
+    async def _format_customer_summary(self, storage) -> str:
+        """Fetch and format customer summary from cached storage."""
+        if not storage:
+            logger.warning("[SuggestionService] No storage available for customer summary")
+            return "Customer summary data not available."
+
+        summary_data = await storage.get_analytics_summary()
+        if not summary_data:
+            logger.warning("[SuggestionService] Customer summary not found in storage")
+            return "Customer summary data not available. Please ensure analytics data was fetched when bot was added."
+
+        # Format the summary data for the prompt
+        try:
+            formatted = []
+            formatted.append(f"**Customer**: {summary_data.get('name', 'Unknown')}")
+            formatted.append(f"**Health Score**: {summary_data.get('health_score', 'N/A')}/100")
+            formatted.append(f"**Sentiment**: {summary_data.get('sentiment', 'N/A').capitalize()}")
+
+            if summary_data.get('customer_intent'):
+                formatted.append(f"\n**Customer Intent**: {summary_data['customer_intent']}")
+
+            if summary_data.get('summary'):
+                formatted.append(f"\n**Summary**: {summary_data['summary']}")
+
+            if summary_data.get('risks'):
+                formatted.append(f"\n**Risks**: {summary_data['risks']}")
+
+            if summary_data.get('opportunities'):
+                formatted.append(f"\n**Opportunities**: {summary_data['opportunities']}")
+
+            if summary_data.get('key_topics'):
+                formatted.append(f"\n**Key Topics**: {summary_data['key_topics']}")
+
+            return "\n".join(formatted)
+
+        except Exception as e:
+            logger.exception(f"[SuggestionService] Error formatting customer summary: {e}")
+            return "Error formatting customer summary data."
+
+    async def _format_recent_interactions(self, storage) -> str:
+        """Fetch and format recent interactions from cached storage."""
+        if not storage:
+            logger.warning("[SuggestionService] No storage available for recent interactions")
+            return "Recent interactions data not available."
+
+        interactions_data = await storage.get_analytics_interactions()
+        if not interactions_data:
+            logger.warning("[SuggestionService] Recent interactions not found in storage")
+            return "Recent interactions data not available. Please ensure analytics data was fetched when bot was added."
+
+        # Format the interactions data for the prompt
+        try:
+            formatted = []
+            total_count = interactions_data.get('total_count', 0)
+            formatted.append(f"**Total Recent Interactions**: {total_count}")
+
+            by_source = interactions_data.get('by_source', {})
+            for source, interactions in by_source.items():
+                if interactions:
+                    formatted.append(f"\n**{source.upper()} ({len(interactions)} interactions)**:")
+                    for interaction in interactions[:5]:  # Show top 5 per source
+                        timestamp = interaction.get('timestamp', 'N/A')
+                        summary = interaction.get('summary', 'No summary')
+                        sentiment = interaction.get('sentiment', 'neutral')
+                        if summary:
+                            formatted.append(f"  - [{timestamp}] {summary} (Sentiment: {sentiment})")
+
+            return "\n".join(formatted) if formatted else "No recent interactions found."
+
+        except Exception as e:
+            logger.exception(f"[SuggestionService] Error formatting recent interactions: {e}")
+            return "Error formatting recent interactions data."
 
     def _ts_to_seconds(self, ts: str) -> Optional[float]:
         """Convert 'MM:SS' or 'H:MM:SS' timestamp string to seconds."""
@@ -151,25 +230,30 @@ class SuggestionService:
             {
                 "function_declarations": [
                     {
-                        "name": "search_issues_kb",
+                        "name": "search_knowledge_base",
                         "description": (
-                            "Search an issues knowledge base for similar past "
-                            "incidents or troubleshooting steps based on the "
-                            "current problem description."
+                            "Search the company or product knowledge base for information. "
+                            "Use 'company_data' for policies, terms, and general company info. "
+                            "Use 'products' for product features, specs, and troubleshooting."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "query": {
                                     "type": "string",
-                                    "description": "Natural language description of the issue to search for.",
+                                    "description": "Natural language query to search for.",
+                                },
+                                "index_name": {
+                                    "type": "string",
+                                    "enum": ["company_data", "products"],
+                                    "description": "Which knowledge base to search.",
                                 },
                                 "top_k": {
                                     "type": "integer",
-                                    "description": "Maximum number of similar issues to retrieve.",
+                                    "description": "Maximum number of results to retrieve.",
                                 },
                             },
-                            "required": ["query"],
+                            "required": ["query", "index_name"],
                         },
                     }
                 ]
@@ -182,67 +266,85 @@ class SuggestionService:
         )
 
         base_prompt = """
-You are an expert assistant helping engineers debug issues during a live call.
+You are a sales team helper AI assistant providing real-time guidance during customer meetings.
 
 You will be given:
-- A short slice of recent meeting context (events + transcript), and
-- Optional snippets from an issues knowledge base.
+- Recent meeting context (events + transcript from the last few seconds)
+- Customer intent: Global analysis of customer from onboarding - what they were/are/will be looking for
+- Recent interactions: Context from multiple sources (Slack, Gmail, Zendesk, Salesforce, etc.)
+- Optional knowledge base snippets (company policies, product information)
 
-Your task is to produce a **very short**, **actionable** suggestion that helps
-the helper-person advise the person who reported the issue.
+Your task is to provide **strategic sales guidance** to help the sales person navigate this moment in the meeting.
 
-Guidelines:
-- Focus on the most recent issue being discussed (HTTP errors, failures, etc.).
-- Propose 2–4 concrete steps or checks (what to inspect, change, or try next).
-- Ground your advice in both the meeting context and any relevant KB snippets.
-- Do not write a long explanation; keep it to a few sentences or bullet points.
-- Do not repeat the entire error messages; reference only key parts.
+Guidelines for your guidance:
+- **Be strategic**: Consider the customer's journey, intent, and recent interactions when suggesting what to do
+- **Be helpful**: If the customer faces an issue or asks a question, help resolve it quickly using the knowledge base, then guide the sales person to pivot back to value discussion
+- **Be contextual**: Reference specific details from the customer's history when relevant
+- **Be concise**: Keep guidance to 2-4 bullet points or a few sentences
+- **Focus on guidance**: Tell the sales person WHAT to say or do, not just what's happening
+
+Examples of good guidance:
+- "Customer is asking about [feature]. Based on their Salesforce opportunity stage (Negotiation) and recent pricing questions, emphasize ROI and show how this feature addresses their specific use case mentioned in last week's email."
+- "They're encountering an error. Use knowledge base to provide the fix immediately, then transition to discussing the premium support tier they were curious about."
+- "Customer intent shows they're comparing with competitors. This is the moment to highlight our unique [specific differentiator] that directly addresses their core need."
 """.strip()
+
+        # Fetch and format analytics context from storage
+        customer_summary = await self._format_customer_summary(storage)
+        recent_interactions = await self._format_recent_interactions(storage)
 
         full_prompt = f"""{base_prompt}
 
 Time window: from {window_start:.1f}s to {window_end:.1f}s (meeting-relative)
 
-Recent meeting context (events + transcript):
+CONTEXT:
+1. Customer Summary (Health, Sentiment, Intent, Risks, Opportunities):
+{customer_summary}
+
+2. Recent Interactions (from Slack, Gmail, Zendesk, Salesforce, etc.):
+{recent_interactions}
+
+3. Recent meeting context (what just happened in the meeting):
 {joined_context}
 
-You may call the `search_issues_kb` tool if you think similar past issues
-would help you produce a better suggestion.
+You may call the `search_knowledge_base` tool if you need to look up:
+- Company policies, terms, pricing ("company_data")
+- Product features, specs, troubleshooting ("products")
 
-Now, write a very short suggestion that:
-- Identifies the most likely nature of the problem, and
-- Lists 2–4 practical steps the helper should suggest to move forward.
+Based on what's happening in the meeting right now, the customer's health/sentiment/intent, and their recent interactions, provide strategic guidance for the sales person on:
+- What to say or do next to move the deal forward
+- How to address the current situation based on customer's health score and sentiment
+- How to leverage this moment considering their risks and opportunities
 """.strip()
 
-        # Helper to execute the search_issues_kb tool when invoked by Gemini.
+        # Helper to execute the search_knowledge_base tool when invoked by Gemini.
         async def _handle_tool_call(tool_name: str, args: dict) -> str:
-            if tool_name != "search_issues_kb":
+            if tool_name != "search_knowledge_base":
                 return f"Unknown tool: {tool_name}"
 
-            issues_store = getattr(self.summarization_service, "issues_pinecone_store", None)
-            if not issues_store:
-                return "Issues knowledge base is not available."
-
-            query = args.get("query") or joined_context
+            index_name = args.get("index_name")
+            query = args.get("query")
             top_k = int(args.get("top_k") or 5)
 
+            if not query:
+                return "Query is required."
+
+            store = None
+            if index_name == "company_data":
+                store = self.company_store
+            elif index_name == "products":
+                store = self.product_store
+            else:
+                return f"Invalid index_name: {index_name}. Must be 'company_data' or 'products'."
+
             try:
-                matches = issues_store.search_similar_issues(query, top_k=top_k)
-                lines: List[str] = []
-                for m in matches:
-                    md = m.get("metadata", {}) or {}
-                    text = (
-                        md.get("title")
-                        or md.get("summary")
-                        or md.get("description")
-                        or ""
-                    )
-                    if text:
-                        lines.append(f"- {text}")
-                return "\n".join(lines) if lines else "(No similar issues found in the knowledge base.)"
+                # Mocking the actual search call for now as per instructions
+                # In real implementation: matches = store.search_similar_issues(query, top_k=top_k)
+                return f"[Mock Result from {index_name}] Search for '{query}' returned no results or mocked data."
+                
             except Exception as e:
-                logger.error(f"[SuggestionService] Error querying issues Pinecone index: {e}")
-                return f"Error while searching issues knowledge base: {e}"
+                logger.error(f"[SuggestionService] Error querying Pinecone index {index_name}: {e}")
+                return f"Error while searching {index_name}: {e}"
 
         # Simple tool-calling loop: allow the model to request tools at most once
         # before producing a final answer.
