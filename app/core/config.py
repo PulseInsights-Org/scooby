@@ -12,7 +12,7 @@ class SummarizationConfig(BaseModel):
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
 
     # Analytics API settings
-    analytics_api_base_url: str = os.getenv("ANALYTICS_API_BASE_URL", "http://localhost:8000")
+    analytics_api_base_url: str = os.getenv("ANALYTICS_API_BASE_URL", "http://localhost:8001")
 
     # Recall.ai settings
     recall_api_key: str = os.getenv("RECALL_API_KEY", "")

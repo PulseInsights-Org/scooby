@@ -36,7 +36,7 @@ config = get_config()
 class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
-    x_org_name: str
+    # x_org_name: str
     tenant_id: str
     saveTranscript: bool = True
     customer_id: str
@@ -100,9 +100,22 @@ async def fetch_analytics_data(customer_id: str, tenant_id: str, privacy_mode: s
             if isinstance(interactions_response, httpx.Response) and interactions_response.status_code == 200:
                 try:
                     interactions_json = interactions_response.json()
-                    if interactions_json.get("status") == "success" and "data" in interactions_json:
-                        recent_interactions = interactions_json["data"]
-                        logger.info(f"[Analytics] Successfully fetched recent interactions for customer_id={customer_id}")
+                    if interactions_json.get("status") == "success":
+                        payload = interactions_json.get("data")
+                        if payload is None and (
+                            "total_count" in interactions_json or "by_source" in interactions_json
+                        ):
+                            # Some analytics versions return the payload at the top level.
+                            payload = {
+                                "total_count": interactions_json.get("total_count", 0),
+                                "by_source": interactions_json.get("by_source", {}),
+                            }
+
+                        if payload is not None:
+                            recent_interactions = payload
+                            logger.info(f"[Analytics] Successfully fetched recent interactions for customer_id={customer_id}")
+                        else:
+                            logger.warning(f"[Analytics] Missing interactions payload: {interactions_json}")
                     else:
                         logger.warning(f"[Analytics] Invalid interactions response format: {interactions_json}")
                 except Exception as e:
@@ -437,6 +450,5 @@ async def analyze_screen_from_slack(request: Request):
     # Return immediately to avoid Slack timeout; Slack should only see a simple text
     logger.info("[ANALYZE_SCREEN] Acknowledged request, processing in background")
     return PlainTextResponse("processing...", status_code=200)
-
 
 
