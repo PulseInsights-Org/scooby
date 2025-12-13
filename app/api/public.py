@@ -5,6 +5,8 @@ from pydantic import BaseModel
 import logging
 import os
 import json
+import asyncio
+import httpx
 from datetime import datetime, timezone
 from app.api.recall import (
     add_bot,
@@ -35,13 +37,87 @@ class MeetingRequest(BaseModel):
     meeting_url: str
     isTranscript: bool = False
     x_org_name: str
+    tenant_id: str
     saveTranscript: bool = True
+    customer_id: str
+    privacy_mode: str = "public"  # "public" or "full"
 
 class RemoveBotRequest(BaseModel):
     bot_id: str
 
 class SlackChannelRequest(BaseModel):
     channel_id: str
+
+async def fetch_analytics_data(customer_id: str, tenant_id: str, privacy_mode: str) -> dict:
+    """Fetch customer summary and recent interactions from analytics API in parallel.
+
+    Args:
+        customer_id: Customer identifier
+        tenant_id: Tenant identifier (for X-Tenant-ID header)
+        privacy_mode: Privacy mode ("public" or "full")
+
+    Returns:
+        dict with keys: customer_summary, recent_interactions
+    """
+    analytics_base_url = config.analytics_api_base_url
+    headers = {
+        "X-Tenant-ID": tenant_id,
+        "X-Privacy-Mode": privacy_mode,
+    }
+
+    customer_summary_url = f"{analytics_base_url}/api/v1/analytics/customer/{customer_id}/summary"
+    recent_interactions_url = f"{analytics_base_url}/api/v1/analytics/customer/{customer_id}/recent-interactions?limit=10"
+
+    customer_summary = None
+    recent_interactions = None
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Make parallel requests
+            summary_task = client.get(customer_summary_url, headers=headers)
+            interactions_task = client.get(recent_interactions_url, headers=headers)
+
+            summary_response, interactions_response = await asyncio.gather(
+                summary_task, interactions_task, return_exceptions=True
+            )
+
+            # Process customer summary response
+            if isinstance(summary_response, httpx.Response) and summary_response.status_code == 200:
+                try:
+                    summary_json = summary_response.json()
+                    if summary_json.get("status") == "success" and "data" in summary_json:
+                        customer_summary = summary_json["data"]
+                        logger.info(f"[Analytics] Successfully fetched customer summary for customer_id={customer_id}")
+                    else:
+                        logger.warning(f"[Analytics] Invalid summary response format: {summary_json}")
+                except Exception as e:
+                    logger.exception(f"[Analytics] Error parsing customer summary JSON: {e}")
+            else:
+                error_msg = str(summary_response) if isinstance(summary_response, Exception) else f"Status {summary_response.status_code}"
+                logger.warning(f"[Analytics] Failed to fetch customer summary: {error_msg}")
+
+            # Process recent interactions response
+            if isinstance(interactions_response, httpx.Response) and interactions_response.status_code == 200:
+                try:
+                    interactions_json = interactions_response.json()
+                    if interactions_json.get("status") == "success" and "data" in interactions_json:
+                        recent_interactions = interactions_json["data"]
+                        logger.info(f"[Analytics] Successfully fetched recent interactions for customer_id={customer_id}")
+                    else:
+                        logger.warning(f"[Analytics] Invalid interactions response format: {interactions_json}")
+                except Exception as e:
+                    logger.exception(f"[Analytics] Error parsing recent interactions JSON: {e}")
+            else:
+                error_msg = str(interactions_response) if isinstance(interactions_response, Exception) else f"Status {interactions_response.status_code}"
+                logger.warning(f"[Analytics] Failed to fetch recent interactions: {error_msg}")
+
+    except Exception as e:
+        logger.exception(f"[Analytics] Error fetching analytics data for customer_id={customer_id}: {e}")
+
+    return {
+        "customer_summary": customer_summary,
+        "recent_interactions": recent_interactions,
+    }
 
 @router.get("/scooby")
 async def bot_html(request: Request):
@@ -80,11 +156,49 @@ async def get_bot_status():
 async def add_scooby_bot(body : MeetingRequest, request: Request):
     meeting_url = body.meeting_url
     is_transcript = body.saveTranscript or body.isTranscript
-    bot_id = await add_bot(meeting_url, is_transcript, x_org_name=body.x_org_name)
+
+    # x_org_name and tenant_id are the same
+    x_org_name = body.tenant_id
+
+    # Step 1: Add bot to meeting (call Recall API)
+    bot_id = await add_bot(
+        meeting_url,
+        is_transcript,
+        x_org_name=x_org_name,
+        customer_id=body.customer_id,
+        privacy_mode=body.privacy_mode,
+    )
+
     if not bot_id:
         return {
             "message": "Scooby Bot already exists, Please remove and try again"
         }
+
+    # Step 2: Fetch analytics data in parallel (after bot_id is received)
+    logger.info(f"[add_scooby] Bot {bot_id} created, fetching analytics data for customer_id={body.customer_id}")
+    analytics_data = await fetch_analytics_data(
+        customer_id=body.customer_id,
+        tenant_id=body.tenant_id,
+        privacy_mode=body.privacy_mode,
+    )
+
+    # Step 3: Store analytics data in summary_storage
+    from app.api.recall import summary_storage as global_summary_storage
+    if global_summary_storage and analytics_data:
+        try:
+            # Store as JSON for proper parsing in services
+            customer_summary = analytics_data.get("customer_summary")
+            recent_interactions = analytics_data.get("recent_interactions")
+
+            if customer_summary:
+                await global_summary_storage.save_analytics_summary(json.dumps(customer_summary))
+            if recent_interactions:
+                await global_summary_storage.save_analytics_interactions(json.dumps(recent_interactions))
+
+            logger.info(f"[add_scooby] Analytics data saved for bot {bot_id}")
+        except Exception as e:
+            logger.exception(f"[add_scooby] Error saving analytics data: {e}")
+
     return {"bot_id": bot_id}
 
 

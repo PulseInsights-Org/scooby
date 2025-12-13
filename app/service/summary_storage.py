@@ -52,6 +52,15 @@ class SummaryStorage:
             self.summaries_dir,
             f"{org_name}_{meeting_id}_screen_analysis.txt",
         )
+        # Analytics data files (for customer summary and recent interactions)
+        self.analytics_summary_path = os.path.join(
+            self.summaries_dir,
+            f"{org_name}_{meeting_id}_analytics_summary.json",
+        )
+        self.analytics_interactions_path = os.path.join(
+            self.summaries_dir,
+            f"{org_name}_{meeting_id}_analytics_interactions.json",
+        )
 
         logger.info(f"SummaryStorage initialized for {org_name}_{meeting_id}")
         logger.info(f"Transcript path: {self.transcript_path}")
@@ -59,6 +68,8 @@ class SummaryStorage:
         logger.info(f"Summary path: {self.summary_path}")
         logger.info(f"Suggestions path: {self.suggestions_path}")
         logger.info(f"Screen analysis path: {self.screen_analysis_path}")
+        logger.info(f"Analytics summary path: {self.analytics_summary_path}")
+        logger.info(f"Analytics interactions path: {self.analytics_interactions_path}")
 
     async def save_transcript_line(
         self,
@@ -332,3 +343,71 @@ class SummaryStorage:
             break
 
         return "\n".join(lines[idx:]).strip()
+
+    async def save_analytics_summary(self, summary_json: Optional[str]) -> None:
+        """Save customer summary from analytics API (as JSON string)."""
+        try:
+            if not summary_json:
+                logger.warning("No customer summary to save")
+                return
+
+            async with aiofiles.open(self.analytics_summary_path, 'w', encoding='utf-8') as f:
+                await f.write(summary_json)
+
+            logger.info(f"Saved customer summary to {self.analytics_summary_path} ({len(summary_json)} chars)")
+
+        except Exception as e:
+            logger.exception(f"Error saving customer summary: {e}")
+
+    async def save_analytics_interactions(self, interactions_json: Optional[str]) -> None:
+        """Save recent interactions from analytics API (as JSON string)."""
+        try:
+            if not interactions_json:
+                logger.warning("No recent interactions to save")
+                return
+
+            async with aiofiles.open(self.analytics_interactions_path, 'w', encoding='utf-8') as f:
+                await f.write(interactions_json)
+
+            logger.info(f"Saved recent interactions to {self.analytics_interactions_path} ({len(interactions_json)} chars)")
+
+        except Exception as e:
+            logger.exception(f"Error saving recent interactions: {e}")
+
+    async def get_analytics_summary(self) -> Optional[dict]:
+        """Retrieve saved customer summary as dict."""
+        try:
+            if not os.path.exists(self.analytics_summary_path):
+                logger.debug("Customer summary file does not exist")
+                return None
+
+            async with aiofiles.open(self.analytics_summary_path, 'r', encoding='utf-8') as f:
+                content = await f.read()
+
+            if content.strip():
+                import json
+                return json.loads(content)
+            return None
+
+        except Exception as e:
+            logger.exception(f"Error reading customer summary: {e}")
+            return None
+
+    async def get_analytics_interactions(self) -> Optional[dict]:
+        """Retrieve saved recent interactions as dict."""
+        try:
+            if not os.path.exists(self.analytics_interactions_path):
+                logger.debug("Recent interactions file does not exist")
+                return None
+
+            async with aiofiles.open(self.analytics_interactions_path, 'r', encoding='utf-8') as f:
+                content = await f.read()
+
+            if content.strip():
+                import json
+                return json.loads(content)
+            return None
+
+        except Exception as e:
+            logger.exception(f"Error reading recent interactions: {e}")
+            return None

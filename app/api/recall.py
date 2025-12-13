@@ -237,8 +237,25 @@ inactivity_monitor = InactivityMonitor(
     on_cleared=lambda: (_set_inactive(), bot_context.print_active_bot()),
 )
 
-async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: str) -> str | None:
-    """Create a Recall bot and update local module state."""
+async def add_bot(
+    meeting_url: str,
+    is_transcript: bool = False,
+    *,
+    x_org_name: str,
+    customer_id: str = None,
+    privacy_mode: str = "public",
+    analytics_data: dict = None,
+) -> str | None:
+    """Create a Recall bot and update local module state.
+
+    Args:
+        meeting_url: Meeting URL to join
+        is_transcript: Whether to save transcript
+        x_org_name: Organization name (also used as tenant_id for analytics API)
+        customer_id: Customer identifier for analytics
+        privacy_mode: Privacy mode ("public" or "full")
+        analytics_data: Pre-fetched analytics data dict with keys: customer_intent, recent_interactions
+    """
     global current_bot_id, current_meeting_url, transcripts_enabled, current_x_org_name
     global transcript_buffer, summary_storage
 
@@ -262,6 +279,15 @@ async def add_bot(meeting_url: str, is_transcript: bool = False, *, x_org_name: 
             org_name=x_org_name,
             meeting_id=bot_id
         )
+
+        # Save analytics data if provided
+        if analytics_data:
+            try:
+                await summary_storage.save_analytics_intent(analytics_data.get("customer_intent"))
+                await summary_storage.save_analytics_interactions(analytics_data.get("recent_interactions"))
+                logger.info(f"[add_bot] Saved analytics data for bot {bot_id}")
+            except Exception as e:
+                logger.exception(f"[add_bot] Error saving analytics data: {e}")
 
         try:
             bot_context.bot_id = bot_id
