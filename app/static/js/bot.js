@@ -44,7 +44,7 @@ async function initAudio() {
             await audioContext.resume();
             console.log("▶️ Resumed AudioContext from suspended");
         }
-        console.log('✅ Audio context initialized for Scooby AI');
+        console.log('✅ Audio context initialized for Nexus AI');
     } catch (error) {
         console.error('❌ Failed to initialize audio context:', error);
     } finally {

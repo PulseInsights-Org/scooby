@@ -1,5 +1,6 @@
 import asyncio
 from typing import Any, Dict, Optional
+import logging
 
 from supabase import create_client, Client
 
@@ -26,6 +27,7 @@ class MeetingSummaryStore:
         service_role_key = getattr(config, "supabase_service_role_key", "") or ""
 
         self._table_name: str = table_name
+        self._logger = logging.getLogger(__name__)
         self._client: Optional[Client]
 
         if not url or not service_role_key:
@@ -38,6 +40,53 @@ class MeetingSummaryStore:
     @property
     def enabled(self) -> bool:
         return self._client is not None
+
+    async def ensure_meeting_row(
+        self,
+        *,
+        org_name: str,
+        bot_id: str,
+        meeting_url: Optional[str],
+    ) -> None:
+        """Ensure a meeting row exists as soon as the bot is created.
+
+        Creates or upserts a row with org_name, bot_id, meeting_url and
+        leaves summary/status as NULL until they are populated later by
+        other upsert calls.
+        """
+        if not self._client:
+            return
+
+        payload: Dict[str, Any] = {
+            "org_name": org_name,
+            "bot_id": bot_id,
+            "meeting_url": meeting_url,
+            # Let DB default / stay NULL for these until updated later
+            "summary": None,
+            "status": None,
+        }
+
+        def _do_upsert() -> None:
+            self._client.table(self._table_name).upsert(
+                payload,
+                on_conflict="org_name,bot_id",
+            ).execute()
+
+        try:
+            await asyncio.to_thread(_do_upsert)
+            self._logger.info(
+                "[Supabase] ensure_meeting_row upsert OK org=%s bot=%s",
+                org_name,
+                bot_id,
+            )
+        except Exception as e:
+            self._logger.exception(
+                "[Supabase] ensure_meeting_row failed org=%s bot=%s: %s",
+                org_name,
+                bot_id,
+                e,
+            )
+            raise
 
     async def upsert_summary(
         self,
@@ -71,7 +120,33 @@ class MeetingSummaryStore:
         try:
             await asyncio.to_thread(_do_upsert)
         except Exception:
-            # Fail silently; summarization pipeline should not break if Supabase fails
+            return
+
+    async def upsert_status(
+        self,
+        *,
+        org_name: str,
+        bot_id: str,
+        status: str,
+    ) -> None:
+        if not self._client:
+            return
+
+        payload: Dict[str, Any] = {
+            "org_name": org_name,
+            "bot_id": bot_id,
+            "status": status,
+        }
+
+        def _do_upsert() -> None:
+            self._client.table(self._table_name).upsert(
+                payload,
+                on_conflict="org_name,bot_id",
+            ).execute()
+
+        try:
+            await asyncio.to_thread(_do_upsert)
+        except Exception:
             return
 
     async def get_current_summary(
@@ -101,7 +176,13 @@ class MeetingSummaryStore:
                 )
                 data = getattr(resp, "data", None) or {}
                 return data.get("summary")
-            except Exception:
+            except Exception as e:
+                self._logger.exception(
+                    "[Supabase] get_current_summary failed org=%s bot=%s: %s",
+                    org_name,
+                    bot_id,
+                    e,
+                )
                 return None
 
         return await asyncio.to_thread(_do_select)
