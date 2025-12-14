@@ -29,6 +29,12 @@ from app.service.screen_analysis_service import ScreenAnalysisService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Reduce noise from underlying HTTP client (used by Supabase, etc.)
+try:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+except Exception:
+    pass
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
 
@@ -279,6 +285,10 @@ async def add_bot(
             org_name=x_org_name,
             meeting_id=bot_id
         )
+        try:
+            summary_storage.meeting_url = meeting_url
+        except Exception:
+            pass
 
         # Save analytics data if provided
         if analytics_data:
