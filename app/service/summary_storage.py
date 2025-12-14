@@ -4,6 +4,7 @@ from typing import Optional, List, Dict, Any
 import logging
 import aiofiles
 from app.core.config import get_config
+from app.service.summary_store_supabase import MeetingSummaryStore
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,11 @@ class SummaryStorage:
         self.base_dir = base_dir
         self.org_name = org_name
         self.meeting_id = meeting_id
+        # Optional metadata; meeting_url is set externally (e.g., from add_bot)
+        self.meeting_url: Optional[str] = None
+
+        # Optional Supabase-backed summary store
+        self._supabase_store = MeetingSummaryStore()
 
         # Create directories
         self.transcripts_dir = os.path.join(base_dir, self.config.transcripts_dir)
@@ -149,9 +155,23 @@ class SummaryStorage:
             header += f"{'='*60}\n\n"
             content = clean_summary.strip() + "\n"
 
+            # Persist to local file (existing behavior)
             async with aiofiles.open(self.summary_path, 'w', encoding='utf-8') as f:
                 await f.write(header)
                 await f.write(content)
+
+            # Also upsert into Supabase if configured
+            try:
+                if self._supabase_store and self._supabase_store.enabled:
+                    await self._supabase_store.upsert_summary(
+                        org_name=self.org_name,
+                        bot_id=self.meeting_id,
+                        meeting_url=self.meeting_url,
+                        summary=clean_summary,
+                    )
+            except Exception:
+                # Supabase failures should not break the main pipeline
+                logger.exception("Error upserting summary to Supabase")
 
             logger.info(f"Replaced summary in {self.summary_path} ({len(summary)} chars)")
 
@@ -261,6 +281,22 @@ class SummaryStorage:
         Returns:
             Current summary text or None if file doesn't exist
         """
+        # First try Supabase-backed storage if available
+        try:
+            if self._supabase_store and self._supabase_store.enabled:
+                supabase_summary = await self._supabase_store.get_current_summary(
+                    org_name=self.org_name,
+                    bot_id=self.meeting_id,
+                )
+                if supabase_summary:
+                    logger.debug(
+                        f"Retrieved current summary from Supabase ({len(supabase_summary)} chars)"
+                    )
+                    return supabase_summary
+        except Exception:
+            logger.exception("Error reading current summary from Supabase")
+
+        # Fallback to file-based storage
         try:
             if not os.path.exists(self.summary_path):
                 logger.debug("Summary file does not exist yet")

@@ -19,6 +19,7 @@ from app.service.transcript_ingestion import TranscriptIngestion
 from app.service.transcript_buffer import TranscriptBuffer
 from app.service.summarization_service import SummarizationService
 from app.service.summary_storage import SummaryStorage
+from app.service.summary_store_supabase import MeetingSummaryStore
 from app.service.suggestion_service import SuggestionService
 from app.core.config import get_config
 from app.service.screenshare_buffer import ScreenshareRedisBuffer
@@ -28,6 +29,12 @@ from app.service.screen_analysis_service import ScreenAnalysisService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Reduce noise from underlying HTTP client (used by Supabase, etc.)
+try:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+except Exception:
+    pass
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
@@ -41,6 +48,7 @@ screenshare_s3 = ScreenshareS3()
 screenshare_storage = ScreenshareStorage()
 screen_analysis_service = ScreenAnalysisService()
 suggestion_service = SuggestionService()
+summary_status_store = MeetingSummaryStore()
 
 current_bot_id = None
 current_meeting_url = None
@@ -279,6 +287,28 @@ async def add_bot(
             org_name=x_org_name,
             meeting_id=bot_id
         )
+        # Attach meeting URL metadata so Supabase summaries can reference it
+        try:
+            summary_storage.meeting_url = meeting_url
+        except Exception:
+            pass
+
+        # Ensure a Supabase meeting record exists as soon as the bot is created
+        try:
+            if summary_status_store and summary_status_store.enabled:
+                logger.info(
+                    "[Supabase] ensure_meeting_row call org=%s bot=%s meeting_url=%s",
+                    x_org_name,
+                    bot_id,
+                    meeting_url,
+                )
+                await summary_status_store.ensure_meeting_row(
+                    org_name=x_org_name,
+                    bot_id=bot_id,
+                    meeting_url=meeting_url,
+                )
+        except Exception:
+            pass
 
         # Save analytics data if provided
         if analytics_data:
@@ -573,6 +603,22 @@ async def recall_bot_status_webhook(request: Request):
             if current_bot_id and bot_id != current_bot_id:
                 logger.debug(f"Ignoring status for non-current bot {bot_id}")
                 return {"status": "ok"}
+
+            if status and summary_status_store and summary_status_store.enabled and current_x_org_name and bot_id:
+                try:
+                    logger.info(
+                        "[Supabase] upsert_status call org=%s bot=%s status=%s",
+                        current_x_org_name,
+                        bot_id,
+                        status,
+                    )
+                    await summary_status_store.upsert_status(
+                        org_name=current_x_org_name,
+                        bot_id=bot_id,
+                        status=status,
+                    )
+                except Exception:
+                    logger.exception("[Supabase] upsert_status call failed")
 
             if status == "joining_call":
                 logger.info(f"Bot {bot_id} is joining the meeting")

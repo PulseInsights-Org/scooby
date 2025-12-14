@@ -120,7 +120,7 @@ elif event_type == "your_new_event":
 ### Bot Not Joining Meeting
 ```bash
 # Check logs for:
-- "Failed to add scooby AI bot to meeting"
+- "Failed to add Nexus AI bot to meeting"
 - Recall.ai API errors
 
 # Verify:
@@ -202,7 +202,7 @@ call_ended/done/fatal → _set_inactive() → Clear state
 ⚠️ "Duplicate audio segment detected"
 ⚠️ "Unhandled realtime event: {event_type}"
 
-❌ "Failed to add scooby AI bot to meeting"
+❌ "Failed to add Nexus AI bot to meeting"
 ❌ "Error processing buffer and summarizing"
 ❌ "Bot {bot_id} encountered a fatal error"
 ```
