@@ -475,136 +475,123 @@ Guidelines:
         """
         current_messages = messages
         max_iterations = 5  # Prevent infinite loops
-        
+        last_response: Optional[BaseMessage] = None
+
         for _ in range(max_iterations):
-            # Invoke the LLM with the current messages
             response = await self.llm.ainvoke(current_messages)
+            last_response = response
+
             # Log tool-call summary at INFO for observability
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 tool_names = [tc.get('name', 'unknown') for tc in response.tool_calls]
                 logger.info(
                     "[SummarizationService] LLM requested tools: %s", tool_names
                 )
-
-        # If there are no tool calls, we're done
-        if not hasattr(response, 'tool_calls') or not response.tool_calls:
-            return response
-            
-        # Process tool calls
-        tool_messages = []
-        for tool_call in response.tool_calls:
-            tool_name = tool_call['name']
-            tool_args = tool_call.get('args', {})
-                    
-            # Log the original tool call
-            logger.info(
-                "[SummarizationService] Processing tool call '%s' with raw args: %s",
-                tool_name,
-                tool_args,
-            )
-                    
-            # Handle parameter name mismatches for each tool
-            processed_args = {}
-            if tool_name == 'get_screenshare_frames_by_time':
-                # Tool schema expects: participant_name, timestamp_range
-                # Accept aliases from the LLM and map them into the correct names.
-                if 'participant_name' in tool_args:
-                    processed_args['participant_name'] = tool_args['participant_name']
-                elif 'participant_id' in tool_args:
-                    # Some prompts may encourage the LLM to send participant_id
-                    processed_args['participant_name'] = tool_args['participant_id']
-
-                if 'timestamp_range' in tool_args:
-                    processed_args['timestamp_range'] = tool_args['timestamp_range']
-                elif 'time_range' in tool_args:
-                    # Our earlier attempt renamed this incorrectly; keep the
-                    # key as timestamp_range to satisfy the tool's schema.
-                    processed_args['timestamp_range'] = tool_args['time_range']
-
-                # Pass through any extra keys just in case, but do not rename
-                # away from the required schema fields.
-                for k, v in tool_args.items():
-                    if k not in processed_args:
-                        processed_args[k] = v
-
-            elif tool_name == 'search_meeting_knowledge_base':
-                # Tool schema expects: query, event_type
-                # Map various query key variants back to query.
-                if 'query' in tool_args:
-                    processed_args['query'] = tool_args['query']
-                elif 'query_text' in tool_args:
-                    processed_args['query'] = tool_args['query_text']
-                elif 'queryText' in tool_args:
-                    processed_args['query'] = tool_args['queryText']
-
-                # event_type is optional but supported; keep the same name.
-                if 'event_type' in tool_args:
-                    processed_args['event_type'] = tool_args['event_type']
-                elif 'eventType' in tool_args:
-                    processed_args['event_type'] = tool_args['eventType']
-
-                # Include any additional keys without renaming required ones.
-                for k, v in tool_args.items():
-                    if k not in processed_args:
-                        processed_args[k] = v
             else:
-                # For other tools, pass through all arguments as-is
-                processed_args = tool_args
-                    
-            if tool_name not in self.tool_registry:
-                error_msg = f"Unknown tool: {tool_name}"
-                logger.error(error_msg)
-                tool_messages.append(ToolMessage(
-                    content=error_msg,
-                    tool_call_id=tool_call['id']
-                ))
-                continue
-                        
-            try:
-                tool_func = self.tool_registry[tool_name]
+                # No tool calls -> final response from the LLM
+                return response
+
+            tool_messages: List[ToolMessage] = []
+            for tool_call in response.tool_calls:
+                tool_name = tool_call['name']
+                tool_args = tool_call.get('args', {})
+
                 logger.info(
-                    "[SummarizationService] Calling tool '%s' with processed args: %s",
+                    "[SummarizationService] Processing tool call '%s' with raw args: %s",
                     tool_name,
-                    processed_args,
+                    tool_args,
                 )
-                        
-                # Use invoke() instead of direct call to handle both sync and async tools
-                if asyncio.iscoroutinefunction(tool_func.invoke if hasattr(tool_func, 'invoke') else tool_func):
-                    if hasattr(tool_func, 'invoke'):
-                        tool_result = await tool_func.invoke(processed_args)
-                    else:
-                        tool_result = await tool_func(**processed_args)
+
+                processed_args = {}
+                if tool_name == 'get_screenshare_frames_by_time':
+                    if 'participant_name' in tool_args:
+                        processed_args['participant_name'] = tool_args['participant_name']
+                    elif 'participant_id' in tool_args:
+                        processed_args['participant_name'] = tool_args['participant_id']
+
+                    if 'timestamp_range' in tool_args:
+                        processed_args['timestamp_range'] = tool_args['timestamp_range']
+                    elif 'time_range' in tool_args:
+                        processed_args['timestamp_range'] = tool_args['time_range']
+
+                    for k, v in tool_args.items():
+                        if k not in processed_args:
+                            processed_args[k] = v
+
+                elif tool_name == 'search_meeting_knowledge_base':
+                    if 'query' in tool_args:
+                        processed_args['query'] = tool_args['query']
+                    elif 'query_text' in tool_args:
+                        processed_args['query'] = tool_args['query_text']
+                    elif 'queryText' in tool_args:
+                        processed_args['query'] = tool_args['queryText']
+
+                    if 'event_type' in tool_args:
+                        processed_args['event_type'] = tool_args['event_type']
+                    elif 'eventType' in tool_args:
+                        processed_args['event_type'] = tool_args['eventType']
+
+                    for k, v in tool_args.items():
+                        if k not in processed_args:
+                            processed_args[k] = v
                 else:
-                    if hasattr(tool_func, 'invoke'):
-                        tool_result = tool_func.invoke(processed_args)
+                    processed_args = tool_args
+
+                if tool_name not in self.tool_registry:
+                    error_msg = f"Unknown tool: {tool_name}"
+                    logger.error(error_msg)
+                    tool_messages.append(ToolMessage(
+                        content=error_msg,
+                        tool_call_id=tool_call['id']
+                    ))
+                    continue
+
+                try:
+                    tool_func = self.tool_registry[tool_name]
+                    logger.info(
+                        "[SummarizationService] Calling tool '%s' with processed args: %s",
+                        tool_name,
+                        processed_args,
+                    )
+
+                    if asyncio.iscoroutinefunction(tool_func.invoke if hasattr(tool_func, 'invoke') else tool_func):
+                        if hasattr(tool_func, 'invoke'):
+                            tool_result = await tool_func.invoke(processed_args)
+                        else:
+                            tool_result = await tool_func(**processed_args)
                     else:
-                        tool_result = tool_func(**processed_args)
-                        
-                if not isinstance(tool_result, str):
-                    tool_result = str(tool_result)
-                logger.info(
-                    "[SummarizationService] Tool '%s' completed. Result length: %d chars",
-                    tool_name,
-                    len(tool_result),
-                )
-                        
-                tool_messages.append(ToolMessage(
-                    content=tool_result,
-                    tool_call_id=tool_call['id']
-                ))
-            except Exception as e:
-                logger.error(f"Error calling tool {tool_name}: {e}")
-                tool_messages.append(ToolMessage(
-                    content=f"Error calling tool {tool_name}: {str(e)}",
-                    tool_call_id=tool_call['id']
-                ))
-            
-            # Add the tool responses to the message history
+                        if hasattr(tool_func, 'invoke'):
+                            tool_result = tool_func.invoke(processed_args)
+                        else:
+                            tool_result = tool_func(**processed_args)
+
+                    if not isinstance(tool_result, str):
+                        tool_result = str(tool_result)
+                    logger.info(
+                        "[SummarizationService] Tool '%s' completed. Result length: %d chars",
+                        tool_name,
+                        len(tool_result),
+                    )
+
+                    tool_messages.append(ToolMessage(
+                        content=tool_result,
+                        tool_call_id=tool_call['id']
+                    ))
+                except Exception as e:
+                    logger.error(f"Error calling tool {tool_name}: {e}")
+                    tool_messages.append(ToolMessage(
+                        content=f"Error calling tool {tool_name}: {str(e)}",
+                        tool_call_id=tool_call['id']
+                    ))
+
+            # Add tool responses and continue the loop for another LLM turn
             current_messages = current_messages + [response] + tool_messages
-        
-        # If we get here, we've reached max iterations
+
+        # If we exhaust iterations, surface the last response for debugging.
         logger.warning(f"Reached max iterations ({max_iterations}) in tool calling loop")
-        return current_messages[-1]  # Return the last message
+        if last_response is not None:
+            return last_response
+        return current_messages[-1]
 
     def _coerce_message_content(self, message: Any) -> str:
         """

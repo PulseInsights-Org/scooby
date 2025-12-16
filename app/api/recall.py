@@ -155,7 +155,6 @@ async def run_issue_suggestion_for_active_meeting(
         window_seconds=window_seconds,
     )
 
-
 @router.get("/api/summary_stream")
 async def summary_stream():
     """Server-Sent Events endpoint that streams the current summary when it changes.
